@@ -9,7 +9,7 @@
   },
   "scripts": {
     "start": "node src/server.js",
-    "test": "node --test test/",
+    "test": "node --test \"test/**/*.test.js\"",
     "bench": "node bench/ingest-bench.js",
     "kill-test": "node bench/kill-test.js"
   },

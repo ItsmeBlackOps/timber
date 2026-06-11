@@ -1,0 +1,520 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Timber — logs</title>
+  <link rel="icon" href="data:,">
+  <style>
+    :root {
+      --bg: #0b0d11;
+      --panel: #12151c;
+      --panel2: #181c25;
+      --border: #242a36;
+      --text: #d8dde6;
+      --dim: #8a93a5;
+      --accent: #57a6ff;
+      --ok: #3fb950;
+      --bad: #f0524f;
+      --c-debug: #9aa3b4;
+      --c-info: #57a6ff;
+      --c-warn: #e7b33b;
+      --c-error: #f0524f;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font: 14px/1.5 system-ui, "Segoe UI", Roboto, sans-serif;
+    }
+    [hidden] { display: none !important; }
+    .mono { font-family: ui-monospace, Consolas, "Cascadia Mono", Menlo, monospace; }
+
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 12px;
+      padding: 14px 20px;
+      border-bottom: 1px solid var(--border);
+    }
+    .brand { display: flex; align-items: center; gap: 10px; }
+    .brand h1 { margin: 0; font-size: 18px; font-weight: 650; letter-spacing: .4px; }
+    .brand .sub { color: var(--dim); font-size: 12px; }
+    .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--bad); flex: none; }
+    .dot.ok { background: var(--ok); }
+    .keybox { display: flex; gap: 8px; }
+    .keybox input { width: 300px; max-width: 60vw; }
+
+    input, select, button {
+      background: var(--panel2);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 6px 10px;
+      font: inherit;
+      font-size: 13px;
+    }
+    input::placeholder { color: #5c6577; }
+    input:focus, select:focus { outline: none; border-color: var(--accent); }
+    button { cursor: pointer; }
+    button:hover:not(:disabled) { border-color: var(--accent); }
+    button:disabled { opacity: .45; cursor: default; }
+
+    main { max-width: 1180px; margin: 0 auto; padding: 16px 20px 60px; }
+
+    #banner {
+      padding: 10px 14px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      margin-bottom: 14px;
+      font-size: 13px;
+    }
+    #banner.error { background: rgba(240,82,79,.12); border-color: rgba(240,82,79,.5); color: #ff9d9a; }
+    #banner.warn { background: rgba(231,179,59,.1); border-color: rgba(231,179,59,.45); color: #e9c46a; }
+
+    .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 14px; }
+    .stat { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; }
+    .stat .v { font-size: 22px; font-weight: 600; }
+    .stat .l { color: var(--dim); font-size: 11px; text-transform: uppercase; letter-spacing: .7px; margin-top: 2px; }
+    @media (max-width: 800px) { .stats { grid-template-columns: repeat(2, 1fr); } }
+
+    .filters { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 14px; }
+    .filters .grow { flex: 1; min-width: 140px; }
+    .chips { display: flex; gap: 6px; }
+    .chip { border-radius: 999px; padding: 4px 11px; font-size: 12px; color: var(--dim); background: transparent; }
+    .chip.on.debug { color: var(--c-debug); border-color: var(--c-debug); background: rgba(154,163,180,.12); }
+    .chip.on.info { color: var(--c-info); border-color: var(--c-info); background: rgba(87,166,255,.12); }
+    .chip.on.warn { color: var(--c-warn); border-color: var(--c-warn); background: rgba(231,179,59,.12); }
+    .chip.on.error { color: var(--c-error); border-color: var(--c-error); background: rgba(240,82,79,.12); }
+    label.tail { display: flex; align-items: center; gap: 6px; color: var(--dim); font-size: 13px; cursor: pointer; user-select: none; }
+    label.tail input { accent-color: var(--accent); margin: 0; }
+
+    .tablewrap { border: 1px solid var(--border); border-radius: 8px; overflow: hidden; background: var(--panel); }
+    table { width: 100%; border-collapse: collapse; }
+    th {
+      text-align: left;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: .7px;
+      color: var(--dim);
+      padding: 9px 12px;
+      border-bottom: 1px solid var(--border);
+    }
+    td { padding: 8px 12px; border-bottom: 1px solid #1b202a; vertical-align: top; font-size: 13px; }
+    tbody tr:last-child td { border-bottom: none; }
+    tr.row { cursor: pointer; }
+    tr.row:hover td { background: var(--panel2); }
+    .t-time { width: 120px; }
+    .t-level { width: 70px; }
+    .t-app { width: 150px; }
+    .t-event { width: 210px; }
+    td.time { color: var(--dim); white-space: nowrap; }
+    td.msg { color: #b9c0cd; word-break: break-word; }
+    .lv { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; letter-spacing: .3px; }
+    .lv.debug { color: var(--c-debug); background: rgba(154,163,180,.14); }
+    .lv.info { color: var(--c-info); background: rgba(87,166,255,.14); }
+    .lv.warn { color: var(--c-warn); background: rgba(231,179,59,.14); }
+    .lv.error { color: var(--c-error); background: rgba(240,82,79,.16); }
+    tr.detail td { background: #0a0c10; padding: 0; }
+    tr.detail pre {
+      margin: 0;
+      padding: 12px 14px;
+      font: 12px/1.5 ui-monospace, Consolas, "Cascadia Mono", Menlo, monospace;
+      white-space: pre-wrap;
+      word-break: break-word;
+      max-height: 380px;
+      overflow: auto;
+      color: #c2cad8;
+    }
+    td.empty { padding: 28px 12px; text-align: center; color: var(--dim); }
+    .more { display: flex; justify-content: center; padding: 14px 0; }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <span id="dot" class="dot" title="not connected"></span>
+      <h1>Timber</h1>
+      <span class="sub">central log service</span>
+    </div>
+    <div class="keybox">
+      <input id="key" type="password" placeholder="API key" autocomplete="off" spellcheck="false">
+      <button id="btnConnect" type="button">connect</button>
+    </div>
+  </header>
+
+  <main>
+    <div id="banner" role="status" aria-live="polite" hidden></div>
+
+    <section class="stats">
+      <div class="stat"><div class="v" id="stTotal">–</div><div class="l">events</div></div>
+      <div class="stat"><div class="v" id="stErr">–</div><div class="l">error rate</div></div>
+      <div class="stat"><div class="v" id="stCost">–</div><div class="l">cost (usd)</div></div>
+      <div class="stat"><div class="v" id="stP95">–</div><div class="l">p95 latency</div></div>
+    </section>
+
+    <section class="filters">
+      <select id="selApp" title="app"><option value="">all apps</option></select>
+      <div class="chips" id="levelChips">
+        <button class="chip debug" data-level="debug" type="button">debug</button>
+        <button class="chip info" data-level="info" type="button">info</button>
+        <button class="chip warn" data-level="warn" type="button">warn</button>
+        <button class="chip error" data-level="error" type="button">error</button>
+      </div>
+      <input id="inEvent" class="grow" list="dlEvents" placeholder="event prefix (e.g. ai.)" spellcheck="false">
+      <datalist id="dlEvents"></datalist>
+      <input id="inQ" class="grow" placeholder="message regex" spellcheck="false">
+      <select id="selRange" title="time range">
+        <option value="900000">15m</option>
+        <option value="3600000" selected>1h</option>
+        <option value="21600000">6h</option>
+        <option value="86400000">24h</option>
+        <option value="604800000">7d</option>
+      </select>
+      <label class="tail"><input type="checkbox" id="chkTail"> live tail</label>
+      <button id="btnRefresh" type="button">refresh</button>
+    </section>
+
+    <div class="tablewrap">
+      <table>
+        <thead>
+          <tr>
+            <th class="t-time">time</th>
+            <th class="t-level">level</th>
+            <th class="t-app">app</th>
+            <th class="t-event">event</th>
+            <th>message</th>
+          </tr>
+        </thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
+    <div class="more"><button id="btnMore" type="button" disabled>load more</button></div>
+  </main>
+
+  <script>
+    'use strict';
+    const $ = (id) => document.getElementById(id);
+    const els = {
+      dot: $('dot'), key: $('key'), connect: $('btnConnect'), banner: $('banner'),
+      stTotal: $('stTotal'), stErr: $('stErr'), stCost: $('stCost'), stP95: $('stP95'),
+      app: $('selApp'), chips: $('levelChips'), event: $('inEvent'), dl: $('dlEvents'),
+      q: $('inQ'), range: $('selRange'), tail: $('chkTail'), refresh: $('btnRefresh'),
+      rows: $('rows'), more: $('btnMore'),
+    };
+    const LEVELS = ['debug', 'info', 'warn', 'error'];
+    const PAGE_SIZE = 100;
+
+    function lsGet(k) { try { return localStorage.getItem(k) || ''; } catch { return ''; } }
+    function lsSet(k, v) { try { localStorage.setItem(k, v); } catch { /* storage blocked */ } }
+
+    const state = {
+      key: lsGet('timber.key'),
+      levels: new Set(),
+      app: '',
+      event: '',
+      q: '',
+      rangeMs: Number(els.range.value),
+      cursor: null,
+      eventsByApp: {},
+      healthzOk: false,
+      tailTimer: null,
+      tailTick: 0,
+    };
+
+    class ApiError extends Error {
+      constructor(status, message) {
+        super(message);
+        this.status = status;
+      }
+    }
+
+    async function api(path, params) {
+      const url = new URL(path, window.location.origin);
+      for (const [k, v] of Object.entries(params || {})) {
+        if (v !== '' && v !== null && v !== undefined) url.searchParams.set(k, v);
+      }
+      const headers = {};
+      if (state.key) headers.Authorization = 'Bearer ' + state.key;
+      const res = await fetch(url, { headers });
+      let body = null;
+      try { body = await res.json(); } catch { body = null; }
+      if (!res.ok) throw new ApiError(res.status, (body && body.error) || ('HTTP ' + res.status));
+      return body;
+    }
+
+    function showBanner(msg, kind) {
+      els.banner.textContent = msg;
+      els.banner.className = kind;
+      els.banner.hidden = false;
+    }
+    function clearBanner() { els.banner.hidden = true; }
+    function setDot(ok) {
+      els.dot.classList.toggle('ok', !!ok);
+      if (!ok) els.dot.title = 'not connected';
+    }
+
+    function handleError(e) {
+      if (e instanceof ApiError) {
+        if (e.status === 401 || e.status === 403) {
+          setDot(false);
+          showBanner('Unauthorized (' + e.status + ') — check your API key.', 'error');
+        } else if (e.status === 503) {
+          // 503 is returned after auth passed: server up, key valid, storage down.
+          setDot(true);
+          showBanner('Storage unavailable — MongoDB is down or unconfigured. Ingest still accepts events; queries recover when storage returns.', 'warn');
+        } else {
+          showBanner('Request failed: ' + e.message, 'error');
+        }
+      } else {
+        setDot(false);
+        showBanner('Cannot reach Timber server.', 'error');
+      }
+    }
+
+    function debounce(fn, ms) {
+      let t;
+      return () => { clearTimeout(t); t = setTimeout(fn, ms); };
+    }
+
+    function pad(n) { return String(n).padStart(2, '0'); }
+    function fmtTime(iso) {
+      const d = new Date(iso);
+      if (!iso || isNaN(d.getTime())) return iso || '';
+      const hms = pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+      return d.toDateString() === new Date().toDateString()
+        ? hms
+        : pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + ' ' + hms;
+    }
+    function fmtMs(v) { return v >= 10000 ? (v / 1000).toFixed(1) + ' s' : Math.round(v) + ' ms'; }
+    function fmtCost(v) {
+      if (!v) return '$0';
+      return '$' + (v >= 1 ? v.toFixed(2) : v.toFixed(4));
+    }
+
+    // Doc fields are sender-controlled: render only via textContent, never innerHTML.
+    function renderRows(items, append) {
+      if (!append) els.rows.textContent = '';
+      if (!append && items.length === 0) {
+        const tr = document.createElement('tr');
+        const td = document.createElement('td');
+        td.colSpan = 5;
+        td.className = 'empty';
+        td.textContent = 'no events in the selected range';
+        tr.appendChild(td);
+        els.rows.appendChild(tr);
+        return;
+      }
+      for (const doc of items) {
+        const tr = document.createElement('tr');
+        tr.className = 'row';
+        const tdTime = document.createElement('td');
+        tdTime.className = 'time mono';
+        tdTime.textContent = fmtTime(doc.receivedAt);
+        const tdLv = document.createElement('td');
+        const lv = document.createElement('span');
+        const level = LEVELS.includes(doc.level) ? doc.level : 'info';
+        lv.className = 'lv ' + level;
+        lv.textContent = level;
+        tdLv.appendChild(lv);
+        const tdApp = document.createElement('td');
+        tdApp.textContent = doc.app || '';
+        const tdEv = document.createElement('td');
+        tdEv.className = 'mono';
+        tdEv.textContent = doc.event || '';
+        const tdMsg = document.createElement('td');
+        tdMsg.className = 'msg';
+        tdMsg.textContent = doc.message || '';
+        tr.append(tdTime, tdLv, tdApp, tdEv, tdMsg);
+
+        const dtr = document.createElement('tr');
+        dtr.className = 'detail';
+        dtr.hidden = true;
+        const dtd = document.createElement('td');
+        dtd.colSpan = 5;
+        const pre = document.createElement('pre');
+        pre.textContent = JSON.stringify(doc, null, 2);
+        dtd.appendChild(pre);
+        dtr.appendChild(dtd);
+        tr.addEventListener('click', () => { dtr.hidden = !dtr.hidden; });
+        els.rows.append(tr, dtr);
+      }
+    }
+
+    function buildLogParams(reset) {
+      const p = {
+        limit: PAGE_SIZE,
+        from: new Date(Date.now() - state.rangeMs).toISOString(),
+      };
+      if (state.app) p.app = state.app;
+      if (state.levels.size > 0 && state.levels.size < LEVELS.length) p.level = [...state.levels].join(',');
+      if (state.event) p.event = state.event;
+      if (state.q) p.q = state.q;
+      if (!reset && state.cursor) p.cursor = state.cursor;
+      return p;
+    }
+
+    function updateMoreBtn() { els.more.disabled = !state.cursor || els.tail.checked; }
+
+    async function refreshLogs(reset) {
+      try {
+        const data = await api('/v1/logs', buildLogParams(reset));
+        setDot(true);
+        clearBanner();
+        renderRows(data.items || [], !reset);
+        state.cursor = data.nextCursor || null;
+        updateMoreBtn();
+        return true;
+      } catch (e) {
+        handleError(e);
+        return false;
+      }
+    }
+
+    async function refreshStats() {
+      // /v1/stats accepts only group/from/to/app/event — level and q do not apply here.
+      const p = { group: 'hour', from: new Date(Date.now() - state.rangeMs).toISOString() };
+      if (state.app) p.app = state.app;
+      if (state.event) p.event = state.event;
+      const data = await api('/v1/stats', p);
+      let total = 0, cost = 0, errW = 0, errT = 0, latW = 0, latT = 0;
+      for (const b of data.buckets || []) {
+        total += b.total || 0;
+        cost += b.costUsd || 0;
+        // Bucket-weighted approximations: exact range-wide percentiles/rates are
+        // not derivable from per-bucket stats.
+        if (b.errorRate !== null && b.errorRate !== undefined) { errW += b.errorRate * b.total; errT += b.total; }
+        if (b.latency && typeof b.latency.p95 === 'number') { latW += b.latency.p95 * b.total; latT += b.total; }
+      }
+      els.stTotal.textContent = total.toLocaleString();
+      els.stErr.textContent = errT ? (errW / errT * 100).toFixed(1) + '%' : '–';
+      els.stCost.textContent = total ? fmtCost(cost) : '–';
+      els.stP95.textContent = latT ? fmtMs(latW / latT) : '–';
+    }
+
+    function rebuildEventList() {
+      const names = new Set();
+      for (const [a, list] of Object.entries(state.eventsByApp)) {
+        if (state.app && a !== state.app) continue;
+        for (const e of list) names.add(e);
+      }
+      els.dl.textContent = '';
+      for (const e of [...names].sort()) els.dl.append(new Option(e, e));
+    }
+
+    async function loadEvents() {
+      const data = await api('/v1/events');
+      state.eventsByApp = data.apps || {};
+      const prev = els.app.value;
+      els.app.textContent = '';
+      els.app.append(new Option('all apps', ''));
+      for (const a of Object.keys(state.eventsByApp).sort()) els.app.append(new Option(a, a));
+      els.app.value = prev;
+      if (els.app.value !== prev) els.app.value = '';
+      state.app = els.app.value;
+      rebuildEventList();
+    }
+
+    async function checkHealth() {
+      try {
+        const h = await api('/healthz');
+        state.healthzOk = !!(h && h.ok);
+        const wal = h.wal || {};
+        const fl = h.flusher || {};
+        const mongo = h.mongo || {};
+        els.dot.title = 'wal backlog ' + (wal.backlogBytes ?? '?') + ' B · flusher ' +
+          (fl.caughtUp ? 'caught up' : 'behind') + ' · mongo ' + (mongo.connected ? 'connected' : 'down');
+      } catch {
+        state.healthzOk = false;
+      }
+    }
+
+    async function refreshAll() {
+      if (!state.key) {
+        setDot(false);
+        showBanner('Paste an API key (top right) to connect.', 'warn');
+        return;
+      }
+      await checkHealth();
+      if (!state.healthzOk) {
+        setDot(false);
+        showBanner('Cannot reach Timber server.', 'error');
+        return;
+      }
+      const ok = await refreshLogs(true); // the page-1 fetch doubles as the key probe
+      if (ok) {
+        loadEvents().catch(handleError);
+        refreshStats().catch(handleError);
+      }
+    }
+
+    function applyFilters() {
+      state.app = els.app.value;
+      state.event = els.event.value.trim();
+      state.q = els.q.value.trim();
+      state.rangeMs = Number(els.range.value);
+      state.cursor = null;
+      updateMoreBtn();
+      if (!state.key) return;
+      refreshLogs(true);
+      refreshStats().catch(handleError);
+    }
+
+    function saveKeyAndConnect() {
+      state.key = els.key.value.trim();
+      lsSet('timber.key', state.key);
+      refreshAll();
+    }
+
+    els.connect.addEventListener('click', saveKeyAndConnect);
+    els.key.addEventListener('keydown', (e) => { if (e.key === 'Enter') saveKeyAndConnect(); });
+    els.refresh.addEventListener('click', refreshAll);
+    els.more.addEventListener('click', () => { refreshLogs(false); });
+    els.app.addEventListener('change', () => { applyFilters(); rebuildEventList(); });
+    els.range.addEventListener('change', applyFilters);
+    els.event.addEventListener('input', debounce(applyFilters, 350));
+    els.q.addEventListener('input', debounce(applyFilters, 350));
+
+    els.chips.addEventListener('click', (ev) => {
+      const btn = ev.target.closest('button[data-level]');
+      if (!btn) return;
+      const level = btn.dataset.level;
+      if (state.levels.has(level)) {
+        state.levels.delete(level);
+        btn.classList.remove('on');
+      } else {
+        state.levels.add(level);
+        btn.classList.add('on');
+      }
+      applyFilters();
+    });
+
+    els.tail.addEventListener('change', () => {
+      clearInterval(state.tailTimer);
+      state.tailTimer = null;
+      if (els.tail.checked) {
+        state.tailTick = 0;
+        if (state.key) refreshLogs(true);
+        state.tailTimer = setInterval(() => {
+          if (document.visibilityState !== 'visible' || !state.key) return;
+          state.tailTick += 1;
+          refreshLogs(true);
+          if (state.tailTick % 15 === 0) refreshStats().catch(handleError); // stats every 30 s while tailing
+        }, 2000);
+      }
+      updateMoreBtn();
+    });
+
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible' && els.tail.checked && state.key) refreshLogs(true);
+    });
+
+    els.key.value = state.key;
+    refreshAll();
+  </script>
+</body>
+</html>

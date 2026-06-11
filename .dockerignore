@@ -1,0 +1,15 @@
+# build context = package files + src only; everything else stays out
+node_modules
+wal-data
+wal-data*
+.git
+.github
+test
+bench
+docs
+*.md
+.env
+.env.*
+.gitignore
+.dockerignore
+docker-compose.yml
