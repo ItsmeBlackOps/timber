@@ -1,0 +1,7 @@
+node_modules/
+wal-data/
+wal-data*/
+*.log
+.env
+.env.*
+tmp/

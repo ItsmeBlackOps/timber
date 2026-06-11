@@ -1,0 +1,19 @@
+{
+  "name": "timber",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Central log service — WAL-first ingest, MongoDB storage, framework-free.",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test test/",
+    "bench": "node bench/ingest-bench.js",
+    "kill-test": "node bench/kill-test.js"
+  },
+  "dependencies": {
+    "mongodb": "^6.10.0"
+  }
+}
