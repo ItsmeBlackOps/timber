@@ -23,6 +23,25 @@ export async function loadCheckpoint(dir) {
   return { segmentSeq: 0, offset: 0 };
 }
 
+// Windows: renaming over a file that another handle briefly holds open (a
+// concurrent loadCheckpoint from the healthz route, an AV scanner) fails with
+// a transient EPERM/EACCES/EBUSY that clears within milliseconds. Retrying
+// keeps the C5 atomic-rename contract; POSIX never takes the retry path.
+const TRANSIENT_RENAME_CODES = new Set(['EPERM', 'EACCES', 'EBUSY']);
+const RENAME_ATTEMPTS = 10;
+
+async function renameWithRetry(from, to) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await rename(from, to);
+      return;
+    } catch (err) {
+      if (attempt >= RENAME_ATTEMPTS - 1 || !TRANSIENT_RENAME_CODES.has(err?.code)) throw err;
+      await new Promise((r) => setTimeout(r, 5 + 10 * attempt));
+    }
+  }
+}
+
 export async function saveCheckpoint(dir, { segmentSeq, offset }) {
   const target = join(dir, CHECKPOINT_FILE);
   const tmp = `${target}.tmp`;
@@ -35,5 +54,5 @@ export async function saveCheckpoint(dir, { segmentSeq, offset }) {
   } finally {
     await fh.close();
   }
-  await rename(tmp, target);
+  await renameWithRetry(tmp, target);
 }
