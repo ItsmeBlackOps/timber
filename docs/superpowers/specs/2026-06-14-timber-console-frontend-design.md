@@ -101,7 +101,7 @@ Top bar: brand; **AppSwitcher** (all apps from `/v1/events`, "all apps" default)
 
 ### 8.2 Explore (`/`)
 - **LensRail** (left): curated lenses = preset filters + optional group-by, one click to apply (writes the URL):
-  - Errors & warnings (`level=warn,error`), AI usage (`event=ai.`), By user (group `ids.<userKey>`), By service (group `app`), Slow operations (`data.latencyMs__gte=<threshold>` ∪ `durationMs`), Cron & jobs (`event=cron.`).
+  - Errors & warnings (`level=warn,error`), AI usage (`event=ai.`), By user (group `ids.<userKey>`), By service (group `app`), Slow operations (`data.latencyMs__gte=300` ∪ `durationMs__gte=300`; threshold default 300 ms, adjustable per-view via a control in the lens), Cron & jobs (`event=cron.`).
   - Saved views: user-named filter snapshots in localStorage; "Save current view"; each is a shareable URL.
 - **FilterBar** (top): all §7 controls. **FindByBar**: pick an id key (from `/v1/facets`, default `userEmail`) + type a value (autocomplete via `/v1/groupby?by=ids.<key>&like=`) → adds `ids.<key>=`.
 - **GroupByPanel** (toggle): choose a dimension (app/level/event or any discovered `ids.*`/`data.*`) → horizontal count bars from `/v1/groupby` over the current filter+range (e.g. "errors by user"); click a bar → adds that value as a filter and drills in. Shows `otherCount`.
