@@ -9,6 +9,7 @@ import type { LogDoc } from "@/lib/types";
 interface FakeIO {
   cb: IntersectionObserverCallback;
   elements: Element[];
+  root: Element | Document | null;
   trigger: (isIntersecting: boolean) => void;
   disconnect: () => void;
   observe: (el: Element) => void;
@@ -22,8 +23,10 @@ function installIntersectionObserver() {
   class MockIO {
     cb: IntersectionObserverCallback;
     elements: Element[] = [];
-    constructor(cb: IntersectionObserverCallback) {
+    root: Element | Document | null;
+    constructor(cb: IntersectionObserverCallback, options?: IntersectionObserverInit) {
       this.cb = cb;
+      this.root = (options?.root as Element | Document | null) ?? null;
       const self = this as unknown as FakeIO;
       self.trigger = (isIntersecting: boolean) => {
         this.cb(
@@ -237,5 +240,58 @@ describe("ResultsTable", () => {
       />,
     );
     expect(screen.getByRole("status")).toBeInTheDocument();
+  });
+
+  it("observes the sentinel after a cold load (loading→items) and fires onLoadMore", () => {
+    const onLoadMore = vi.fn();
+    // Cold load: the first paint is the loading branch, so the sentinel is not
+    // in the DOM yet and nothing should be observed.
+    const { rerender } = render(
+      <ResultsTable
+        items={[]}
+        onRowClick={noop}
+        selectedId={null}
+        onLoadMore={onLoadMore}
+        hasMore
+        loading
+      />,
+    );
+    expect(observers.length).toBe(0);
+
+    // Rows arrive: the sentinel now mounts and MUST become observed.
+    rerender(
+      <ResultsTable
+        items={makeItems(5)}
+        onRowClick={noop}
+        selectedId={null}
+        onLoadMore={onLoadMore}
+        hasMore
+        loading={false}
+      />,
+    );
+    expect(observers.length).toBeGreaterThan(0);
+
+    observers.forEach((o) => o.trigger(true));
+    expect(onLoadMore).toHaveBeenCalledTimes(1);
+  });
+
+  it("roots the observer at the scroll container (so a sentinel below the page fold still triggers)", () => {
+    render(
+      <ResultsTable
+        items={makeItems(5)}
+        onRowClick={noop}
+        selectedId={null}
+        onLoadMore={noop}
+        hasMore
+        loading={false}
+      />,
+    );
+    expect(observers.length).toBeGreaterThan(0);
+    const root = observers[0].root;
+    // The sentinel lives inside an overflow:auto container that can extend below
+    // the viewport; intersection must be computed against that container, not the
+    // document viewport, or load-more never fires.
+    expect(root).not.toBeNull();
+    expect((root as Element).getAttribute("role")).toBe("grid");
   });
 });

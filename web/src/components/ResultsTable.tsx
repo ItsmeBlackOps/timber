@@ -8,7 +8,7 @@
 //
 // initialRect gives the virtualizer a viewport size without a real layout pass,
 // which also makes it deterministic under jsdom in tests.
-import { useEffect, useRef } from "react";
+import { useCallback, useRef } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 
 import { LogRow } from "@/components/LogRow";
@@ -35,7 +35,6 @@ export function ResultsTable({
   loading,
 }: ResultsTableProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
-  const sentinelRef = useRef<HTMLDivElement>(null);
 
   const virtualizer = useVirtualizer({
     count: items.length,
@@ -46,26 +45,44 @@ export function ResultsTable({
     initialRect: { width: 900, height: VIEWPORT_HEIGHT },
   });
 
-  // Infinite scroll: observe the sentinel; load the next page when it appears.
-  // Keep the latest callback/flags in a ref so the observer effect can stay
-  // mounted (re-created only when the sentinel node changes).
+  // Infinite scroll: observe the sentinel via a CALLBACK REF so the observer is
+  // (re)attached whenever the sentinel node actually mounts. This is essential on
+  // a cold load: the first render is the loading/empty placeholder, so the
+  // sentinel doesn't exist yet — a mount-time useEffect would see a null node and
+  // never re-run. The callback ref instead fires when the sentinel mounts (after
+  // rows arrive). Latest callback/flags live in refs so the observer created at
+  // mount always sees current props without re-subscribing; setSentinel is stable
+  // (useCallback []) so it only runs when the node mounts/unmounts, not per render.
   const loadMoreRef = useRef(onLoadMore);
   loadMoreRef.current = onLoadMore;
   const canLoadRef = useRef(false);
   canLoadRef.current = hasMore && !loading;
 
-  useEffect(() => {
-    const node = sentinelRef.current;
+  const observerRef = useRef<IntersectionObserver | null>(null);
+  const setSentinel = useCallback((node: HTMLDivElement | null) => {
+    observerRef.current?.disconnect();
+    observerRef.current = null;
     if (!node) return;
-    const observer = new IntersectionObserver((entries) => {
-      for (const entry of entries) {
-        if (entry.isIntersecting && canLoadRef.current) {
-          loadMoreRef.current();
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (entry.isIntersecting && canLoadRef.current) {
+            loadMoreRef.current();
+          }
         }
-      }
-    });
+      },
+      {
+        // The sentinel lives inside the overflow:auto scroll container (its
+        // parent), which can sit below the page fold — so intersection must be
+        // computed against that container, not the document viewport, or
+        // load-more never fires. rootMargin prefetches the next page just before
+        // the user hits the very bottom.
+        root: node.parentElement,
+        rootMargin: "200px",
+      },
+    );
     observer.observe(node);
-    return () => observer.disconnect();
+    observerRef.current = observer;
   }, []);
 
   // First-page loading: dedicated status, no rows yet.
@@ -152,7 +169,7 @@ export function ResultsTable({
       </div>
 
       {/* Infinite-scroll sentinel + page-load affordance. */}
-      <div ref={sentinelRef} data-testid="load-more-sentinel" style={{ height: 1 }} />
+      <div ref={setSentinel} data-testid="load-more-sentinel" style={{ height: 1 }} />
       {hasMore && loading ? (
         <div
           role="status"
