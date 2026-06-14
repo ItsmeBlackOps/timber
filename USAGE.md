@@ -84,7 +84,7 @@ curl -s -X POST "$TIMBER_URL/v1/logs" \
 | `ts` | optional sender-clock timestamp, must be `Date.parse`-able. Server always stamps `receivedAt` itself |
 | `message` | optional string; silently truncated to 512 chars |
 | `ids` | optional object, ≤ 10 keys; values string/number/boolean (coerced to strings). Correlation ids: `requestId`, `taskId`, … |
-| `data` | optional object, any JSON, ≤ 16 KB serialized. Oversize ⇒ stored as `{"_truncated":true,"_originalBytes":n,"_head":"<first 4096 chars>"}` |
+| `data` | optional object, any JSON, ≤ `TIMBER_MAX_DATA_KB` serialized (default 64 KB). Oversize ⇒ stored as `{"_truncated":true,"_originalBytes":n,"_head":"<first 4096 chars>"}`. Fits full request/response payloads; multi-MB blobs should still be sent as IDs |
 
 Any other top-level key ⇒ the whole batch is rejected with `400`. The server adds
 `app`, `env` (from the key), `receivedAt`, `expiresAt` (per-level TTL) and `_id`.
@@ -444,6 +444,7 @@ secret-looking keys before sending.
 | `MONGODB_URI` | *(unset)* | Mongo/Atlas connection string. Unset ⇒ ingest works (WAL only), queries `503`, flusher idles |
 | `TIMBER_DB` | `appLogs` | Mongo database name |
 | `TIMBER_COLLECTION` | `events` | Mongo collection name |
+| `TIMBER_MAX_DATA_KB` | `64` | max serialized `data` size per event (KB), clamp 1..15360; oversize truncates to a stored head. Raise to fit larger request/response payloads |
 | `TIMBER_KEYS` | `[]` | JSON array `[{key,app,env,mode}]`, `mode` = `write`\|`read`. Empty ⇒ startup warning, every authed request `401` |
 | `TIMBER_WAL_DIR` | `./wal-data` | WAL directory (`/data/wal` in the Docker image) |
 | `TIMBER_WAL_BUDGET_MB` | `2048` | WAL disk cap; beyond it ingest answers `429` + `Retry-After` |
