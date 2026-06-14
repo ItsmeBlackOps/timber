@@ -237,6 +237,13 @@ Scaffold prerequisite (controller, before F-phase dispatch): create `web/` via V
 - [ ] **Step 4 — integration**: add real-Mongo cases to `test/integration-mongo.test.js` (facets discovers seeded keys; groupby by `ids.userEmail` with `level=error` counts correctly; `like` filter). Add both endpoints to `USAGE.md` with curl examples + response shapes.
 - [ ] **Step 5 — green** root `npm test` (standalone) and with `TIMBER_TEST_MONGODB_URI` set.
 
+### Task S4: configurable per-event `data` size cap (full request/response support)
+**Files:** `src/config.js`, `test/config.test.js`; `src/validate.js` already reads `limits.maxDataBytes` (no logic change there).
+- [ ] **Step 1 — failing test** (`test/config.test.js`): `loadConfig({}).maxDataBytes === 65536` (new default 64 KB, raised from 16 KB so request/response bodies fit); `loadConfig({TIMBER_MAX_DATA_KB:'256'}).maxDataBytes === 262144`; non-numeric throws `ConfigError`; clamps to a sane ceiling (e.g. 1..15360 KB, staying under Mongo's 16 MB doc limit) — `TIMBER_MAX_DATA_KB:'999999'` → 15360 KB.
+- [ ] **Step 2 — run, see fail.**
+- [ ] **Step 3 — implement** in `src/config.js`: replace the `maxDataBytes: 16_384` constant with `maxDataBytes: clampedKbToBytes(env,'TIMBER_MAX_DATA_KB', 64, 1, 15360)` (KB→bytes; reuse the existing clamp/number helpers). Everything else (the `_truncated`/`_head` path in `validate.js`, the WAL, Mongo) already honors `limits.maxDataBytes`, so no other code changes.
+- [ ] **Step 4 — green** `node --test test/config.test.js`; then full root `npm test`. Add `TIMBER_MAX_DATA_KB` to `USAGE.md`, `.env.example`, and the `docker-compose.yml` optional-env comment. Document the privacy note: a read key (shared with AI assistants) can see whatever is stored in `data`, so keep secrets out via transport redaction; very large blobs (multi-MB transcripts) should still be sent as IDs.
+
 ---
 
 ## Phase F0 — scaffold (controller, single task, before parallel F-phase)
@@ -291,10 +298,14 @@ Scaffold prerequisite (controller, before F-phase dispatch): create `web/` via V
 - [ ] **Step 1 — failing tests** per C-F9: `LevelChips` toggles; `EventCombobox` suggests from mocked `useEvents` and emits prefix; `TimeRangePicker` emits preset + custom from/to; `AdvancedFilters` add/edit/remove id + data(op) rows; `AppSwitcher` lists apps + "all"; `FilterBar` composes them and calls `onChange` with a correct `Filters`.
 - [ ] **Steps 2–4** implement + green. Use tokens for all colors.
 
-### Task F7: results + detail
-**Files:** `components/{ResultsTable,LogRow,DetailPanel}.tsx` + tests.
-- [ ] **Step 1 — failing tests**: `ResultsTable` renders rows virtualized, calls `onLoadMore` when the sentinel is reached and `hasMore`, marks `selectedId`; `LogRow` shows level chip color class + relative time + truncated message; `DetailPanel` pretty-prints JSON and calls `onPivot` with `{kind:'ids'|'data', key/path, value}` when a leaf is clicked; copy buttons present.
-- [ ] **Steps 2–4** implement + green. (Virtualization via `@tanstack/react-virtual`; test with a small list + mocked scroll/IntersectionObserver.)
+### Task F7: results + dynamic request/response inspector
+**Files:** `components/{ResultsTable,LogRow,DetailPanel,JsonTree,ReqResView}.tsx` + tests.
+- [ ] **Step 1 — failing tests**: `ResultsTable` renders rows virtualized, calls `onLoadMore` when the sentinel is reached and `hasMore`, marks `selectedId`; `LogRow` shows level chip color class + relative time + truncated message.
+- [ ] **Step 2 — failing tests (the dynamic inspector — the product's core "view anything" experience)**:
+  - `JsonTree({value,path,onPivot})`: renders arbitrary JSON (objects/arrays/scalars/null) as a collapsible tree; deep nesting collapses by default beyond depth 2; each leaf has a "filter by this" action calling `onPivot({kind:'data'|'ids', path, value})` (path dotted, e.g. `data.response.status`); copy-subtree; long strings clamp with expand; a `_truncated` payload renders its `_head` + a clear "truncated (N bytes)" badge.
+  - `ReqResView({data})`: detects common request/response shapes — `data.request`/`data.response`, `data.req`/`data.res`, `data.prompt`/`data.completion`, `data.input`/`data.output`, `data.messages`/`data.output` — and shows a labeled two-pane (Request | Response) view, each pane a `JsonTree`; falls back to a single `JsonTree` of all `data` when no pair is detected. JSON-looking strings are parsed + pretty-printed; multiline text shows in a `<pre>`.
+  - `DetailPanel({doc,onPivot})`: header (level, app, event, `ids` chips, time); a segment switch between "Request/Response" (`ReqResView`) and "Raw" (full-doc `JsonTree`); an in-document search box that filters/highlights matching keys/values; copy-full-JSON; copy-deep-link; clicking an `ids.*` chip or any leaf calls `onPivot`.
+- [ ] **Steps 3–4** implement + green. (Virtualization via `@tanstack/react-virtual`; test with a small list + mocked IntersectionObserver. `JsonTree` renders children lazily on expand — never stringify the whole tree per node.)
 
 ### Task F8: facet components
 **Files:** `components/{FindByBar,LensRail,GroupByPanel}.tsx` + tests.
