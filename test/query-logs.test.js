@@ -150,6 +150,68 @@ describe('parseLogsQuery — param → filter mapping', () => {
   });
 });
 
+describe('parseLogsQuery — q ReDoS guard (defense-in-depth)', () => {
+  // Nested-quantifier catastrophic-backtracking patterns reachable with a read
+  // key must be rejected at parse time, BEFORE they reach Mongo's PCRE2 engine.
+  // These are all syntactically valid (pass `new RegExp`) and under the 256-char
+  // cap, so this parse-time guard is the first of two layers. The second layer
+  // — the maxTimeMS cap applied in runLogsQuery — is the universal backstop for
+  // the ReDoS classes this conservative heuristic deliberately does NOT try to
+  // classify (alternation overlap like `(a|a)+`, flat optional chains like
+  // `a?a?...aaaa`); see the runLogsQuery maxTimeMS tests below.
+  const evil = [
+    ['nested + on +group', '(a+)+$'],
+    ['nested * on +group', '(a+)*'],
+    ['nested + on *group', '(a*)+'],
+    ['nested * on *group', '(a*)*'],
+    ['nested + on .*group', '(.*)+'],
+    ['nested {2,} on +group', '(\\d+){2,}'],
+    ['nested {3,5} range on +group', '(a+){3,5}'],
+    ['unbounded star on grouped open range', '(a{1,})*'],
+    ['noncapturing nested', '(?:a+)+'],
+    ['quantified backreference group', '(ab+)+c'],
+    ['doubly nested quantifier', '((a+)+)+'],
+  ];
+  for (const [name, pattern] of evil) {
+    test(`rejects ${name}: /${pattern}/`, () => {
+      assertFail(parse({ q: pattern }), /q /);
+    });
+  }
+
+  // The guard must NOT regress ordinary contract C8 search patterns. Each of
+  // these is a legitimate substring/anchored search an operator or AI assistant
+  // would send (per PRD §6.2). They must still map to the C8 $regex shape.
+  const benign = [
+    'slow query',
+    'timeout',
+    '^GET ',
+    'NUMBER 7$',
+    'error: connection refused',
+    'user.*not found', // single unbounded quantifier, not nested
+    '\\d+ ms', // a single quantifier on a class
+    'GET /v1/logs',
+    '(read|write) key', // alternation without a trailing quantifier
+    'status=4\\d\\d',
+    'a+', // a lone quantifier
+    'price: \\$[0-9]+\\.[0-9]{2}',
+  ];
+  for (const pattern of benign) {
+    test(`accepts benign /${pattern}/ and maps to C8 $regex`, () => {
+      const r = parse({ q: pattern });
+      assert.equal(r.ok, true, r.error);
+      assert.deepEqual(r.value.filter.message, { $regex: pattern, $options: 'i' });
+    });
+  }
+
+  test('a long nested pattern under the 256-char cap is still rejected', () => {
+    // Group body has an unbounded `a+` and a long literal run, then the group
+    // is immediately re-quantified with `+` — nested, just verbose.
+    const longEvil = '(a+' + 'b'.repeat(100) + ')+';
+    assert.ok(longEvil.length < 256, 'fits under the q length cap');
+    assertFail(parse({ q: longEvil }), /q /);
+  });
+});
+
 describe('parseLogsQuery — limit clamp/default', () => {
   test('default 100 when absent', () => {
     assert.equal(parse('app=x').value.limit, 100);
@@ -238,6 +300,10 @@ describe('runLogsQuery — collection call shape', () => {
         calls.limit = n;
         return cursor;
       },
+      maxTimeMS(n) {
+        calls.maxTimeMS = n;
+        return cursor;
+      },
       async toArray() {
         return rows;
       },
@@ -258,6 +324,24 @@ describe('runLogsQuery — collection call shape', () => {
     assert.equal(col.calls.filter, filter);
     assert.deepEqual(col.calls.sort, { receivedAt: -1, _id: -1 });
     assert.equal(col.calls.limit, 11);
+  });
+
+  test('applies maxTimeMS to the find when provided (bounds ReDoS/COLLSCAN)', async () => {
+    const col = spyCollection([]);
+    await runLogsQuery(col, { filter: {}, limit: 10 }, { maxTimeMS: 5000 });
+    assert.equal(col.calls.maxTimeMS, 5000, 'find().maxTimeMS(5000) must be chained');
+  });
+
+  test('omits maxTimeMS when not provided (no server-side cap requested)', async () => {
+    const col = spyCollection([]);
+    await runLogsQuery(col, { filter: {}, limit: 10 });
+    assert.equal(col.calls.maxTimeMS, undefined);
+  });
+
+  test('ignores a non-positive maxTimeMS (treats 0/negative as unset)', async () => {
+    const col = spyCollection([]);
+    await runLogsQuery(col, { filter: {}, limit: 10 }, { maxTimeMS: 0 });
+    assert.equal(col.calls.maxTimeMS, undefined);
   });
 
   test('limit+1 rows returned → drops last, nextCursor = last kept row', async () => {

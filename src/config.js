@@ -101,6 +101,10 @@ export function loadConfig(env = process.env) {
     }),
     flushBatchSize: clampedInt(env, 'TIMBER_FLUSH_BATCH', 1000, 1, 1000),
     flushIntervalMs: positiveInt(env, 'TIMBER_FLUSH_INTERVAL_MS', 200),
+    // Server-side cap on read-query execution (maxTimeMS). Bounds catastrophic
+    // $regex backtracking and unindexed COLLSCANs so a single read request can't
+    // pin a Mongo worker indefinitely. 0 disables the cap.
+    queryMaxTimeMs: clampedInt(env, 'TIMBER_QUERY_MAX_TIME_MS', 5000, 0, 600000),
     // 0 is the documented default (cluster mode off), so explicit 0 is valid here.
     clusterWorkers: Math.floor(readNumber(env, 'TIMBER_CLUSTER', 0, { allowZero: true })),
     maxBodyBytes: 1_048_576,

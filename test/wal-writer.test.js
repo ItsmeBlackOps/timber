@@ -224,6 +224,71 @@ test('janitor deletes only segments below checkpoint AND older than retainHours'
   await w.close();
 });
 
+test('janitor reclaims flushed segments under budget pressure regardless of mtime, oldest-first', async () => {
+  const dir = await freshDir();
+  // segMax 1 ⇒ each append after the first rotates first, so every seg holds one 8-byte line
+  const w = await mkWriter(dir, { segmentMaxBytes: 1, retainHours: 24, budgetBytes: 25 });
+  await w.append([{ n: 1 }]); // seg1, 8 bytes
+  await w.append([{ n: 2 }]); // seg2, 8 bytes
+  await w.append([{ n: 3 }]); // seg3, 8 bytes
+  await w.append([{ n: 4 }]); // seg4 (active), 8 bytes
+  assert.equal(w.activeSegmentSeq(), 4);
+  assert.equal(w.totalBytes(), 32); // 4 × 8; over the 25-byte budget
+  assert.equal(w.overBudget(), true);
+
+  // All three sealed segments are FRESH (recent mtime) and seq 1..3 < checkpoint 4,
+  // so the retainHours rule alone would keep them all and ingest would 429 forever.
+  // Budget pressure must override mtime: reclaim oldest-first, only as many as needed
+  // to drop back under budget (reclaim seg1 ⇒ 24 < 25 ⇒ stop).
+  const r = await w.janitor({ segmentSeq: 4, offset: 0 });
+  assert.deepEqual(r.deleted, [SEG1]);
+  assert.equal(w.totalBytes(), 24);
+  assert.equal(w.overBudget(), false); // healthy zero-backlog server is no longer blocked
+  assert.deepEqual(await segNames(dir), [SEG2, SEG3, SEG4]);
+  await w.close();
+});
+
+test('janitor budget pressure never reclaims unflushed backlog (seq >= checkpoint)', async () => {
+  const dir = await freshDir();
+  const w = await mkWriter(dir, { segmentMaxBytes: 1, retainHours: 24, budgetBytes: 8 });
+  await w.append([{ n: 1 }]); // seg1, 8 bytes
+  await w.append([{ n: 2 }]); // seg2, 8 bytes
+  await w.append([{ n: 3 }]); // seg3 (active), 8 bytes
+  assert.equal(w.activeSegmentSeq(), 3);
+  assert.equal(w.totalBytes(), 24);
+  assert.equal(w.overBudget(), true);
+
+  // Checkpoint at 0 ⇒ NOTHING is flushed; every segment is live backlog. Budget
+  // pressure must not delete unacked data, so the janitor reclaims nothing and the
+  // 429 stands (this is the PRD Mongo-outage backpressure path).
+  const r = await w.janitor({ segmentSeq: 0, offset: 0 });
+  assert.deepEqual(r.deleted, []);
+  assert.equal(w.totalBytes(), 24);
+  assert.equal(w.overBudget(), true);
+  assert.deepEqual(await segNames(dir), [SEG1, SEG2, SEG3]);
+  await w.close();
+});
+
+test('janitor budget pressure reclaims every flushed segment but never the active one', async () => {
+  const dir = await freshDir();
+  // budget 1 forces reclaim of all flushed segments; the active seg must survive
+  const w = await mkWriter(dir, { segmentMaxBytes: 1, retainHours: 24, budgetBytes: 1 });
+  await w.append([{ n: 1 }]); // seg1
+  await w.append([{ n: 2 }]); // seg2
+  await w.append([{ n: 3 }]); // seg3
+  await w.append([{ n: 4 }]); // seg4 (active)
+  assert.equal(w.activeSegmentSeq(), 4);
+  assert.equal(w.totalBytes(), 32);
+
+  // checkpoint past the active seq: seg1..3 are flushed; active seg4 is below
+  // checkpoint too but must never be deleted (writer still holds its fd)
+  const r = await w.janitor({ segmentSeq: 99, offset: 0 });
+  assert.deepEqual(r.deleted, [SEG1, SEG2, SEG3]);
+  assert.equal(w.totalBytes(), 8); // only the active segment remains
+  assert.deepEqual(await segNames(dir), [SEG4]);
+  await w.close();
+});
+
 test('close() flushes queued appends, is idempotent, and append after close rejects', async () => {
   const dir = await freshDir();
   const w = await mkWriter(dir);

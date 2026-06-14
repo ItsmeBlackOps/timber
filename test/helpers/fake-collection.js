@@ -320,6 +320,10 @@ export function createFakeCollection() {
       const cursor = {
         sort(s) { sortSpec = s; return cursor; },
         limit(n) { limitN = n; return cursor; },
+        // Real driver chains .maxTimeMS() for the query execution cap (C8
+        // security mitigation). In-memory queries are instant, so this is a
+        // no-op passthrough that just preserves the chainable cursor surface.
+        maxTimeMS() { return cursor; },
         async toArray() {
           let res = store.filter((d) => matchesFilter(d, filter));
           if (sortSpec) res = sortDocs(res, sortSpec);

@@ -12,6 +12,7 @@ import { pathToFileURL } from 'node:url';
 import { loadConfig } from './config.js';
 import { createKeyring, canWrite, canRead } from './auth.js';
 import { validateBatch, enrich } from './validate.js';
+import { createSeqGenerator } from './ids.js';
 import { createRouter } from './http/router.js';
 import { readBody } from './http/body.js';
 import { sendJson, sendError } from './http/respond.js';
@@ -27,16 +28,34 @@ import { runEvents } from './query/events.js';
 // Read once at startup (C11). Buffer, so content-length is exact bytes.
 const UI_HTML = readFileSync(new URL('./ui/index.html', import.meta.url));
 
-// Per-process sequence counter feeding deriveId via enrich (plan decision 1):
-// identical envelopes in the same millisecond still get distinct _ids.
-let processSeq = 0;
-const nextSeq = () => processSeq++;
+// Per-process sequence generator feeding deriveId via enrich (plan decision 1):
+// identical envelopes in the same millisecond still get distinct _ids. The
+// generator is process-unique (random nonce + counter), so cluster-mode workers
+// (decision 9) sharing one Mongo collection never derive a colliding _id —
+// otherwise the 2nd insert raises 11000 and the flusher silently drops a
+// 202-accepted record (PRD §3/§9). See src/ids.js createSeqGenerator.
+const nextSeq = createSeqGenerator();
 
 const log = (msg) => process.stderr.write(`[timber] ${msg}\n`);
 
 export function buildApp(config, deps) {
   const { keyring, walWriter, flusher, getCollection, now } = deps;
   const router = createRouter();
+
+  // Admission-time WAL budget accounting. walWriter.totalBytes() only reflects
+  // bytes AFTER an append's write() resolves, so under concurrency many requests
+  // would slip past an overBudget()-only gate while their appends are still in
+  // flight, overshooting budgetBytes by ~(in-flight requests) x (per-request
+  // bytes). We reserve a request's serialized size in `pendingBytes` the moment
+  // we commit to appending, and release it once the append settles; the gate
+  // checks total + pending, so the disk budget is honored at admission (PRD §7.3
+  // "rather than risking the disk"; contract C5) with overshoot bounded to at
+  // most one in-flight request.
+  let pendingBytes = 0;
+  // Serialize identically to src/wal/writer.js's append() so the reservation
+  // matches the bytes that will actually land on disk.
+  const payloadBytes = (docs) =>
+    Buffer.byteLength(docs.map((d) => JSON.stringify(d) + '\n').join(''), 'utf8');
 
   const unauthorized = (res) => sendJson(res, 401, { error: 'unknown key' }, { 'www-authenticate': 'Bearer' });
 
@@ -76,49 +95,79 @@ export function buildApp(config, deps) {
     if (!principal) return unauthorized(res);
     if (!canWrite(principal)) return sendError(res, 403, 'write key required');
 
-    if (walWriter.overBudget()) {
+    // Admission gate + reservation. The gate must account for bytes already
+    // committed to (total) PLUS bytes reserved by concurrently-admitted requests
+    // whose appends are still in flight (pendingBytes) PLUS an estimate of THIS
+    // request's bytes — otherwise a synchronous burst all reads pending==0 at the
+    // gate and overshoots. Honest senders declare content-length, which bounds the
+    // payload; we reserve that synchronously (no await before the increment) so the
+    // next request in the same tick sees it, then reconcile to the exact serialized
+    // size after enrichment. A single finally releases the reservation on every
+    // exit path (reject or success), since on a rejected/failed path the bytes
+    // never reach the WAL and on success walWriter.totalBytes() has absorbed them.
+    const declared = Number(req.headers['content-length']);
+    const estimate =
+      Number.isFinite(declared) && declared > 0 ? Math.min(declared, config.maxBodyBytes) : 0;
+    if (walWriter.overBudget() || walWriter.totalBytes() + pendingBytes + estimate >= config.walBudgetBytes) {
       return sendJson(res, 429, { error: 'wal budget exceeded' }, { 'retry-after': '5' });
     }
-
-    // Honest senders declare content-length: reject oversize before reading,
-    // with a clean 413 (the body is drained so the response is deliverable).
-    const declared = Number(req.headers['content-length']);
-    if (Number.isFinite(declared) && declared > config.maxBodyBytes) {
-      sendJson(res, 413, { error: 'request body too large' }, { connection: 'close' });
-      req.resume();
-      return;
-    }
-
-    const body = await readBody(req, config.maxBodyBytes);
-    if (!body.ok) {
-      // readBody destroyed the request on overflow; this response is best-effort.
-      return sendError(res, body.status, 'request body too large');
-    }
-
-    let parsed;
+    let reserved = estimate;
+    pendingBytes += reserved;
     try {
-      parsed = JSON.parse(body.buffer.toString('utf8'));
-    } catch {
-      return sendError(res, 400, 'request body is not valid JSON');
-    }
+      // Honest senders declare content-length: reject oversize before reading the
+      // payload. We must still drain the in-flight upload before ending the
+      // response, otherwise forcing the socket shut mid-upload RSTs the client's
+      // outbound write and it sees ECONNRESET instead of the clean 413 it is owed
+      // (contract C11, USAGE.md). Resume to discard the bytes, then send the 413
+      // once the body is fully consumed; the keep-alive socket stays usable.
+      if (Number.isFinite(declared) && declared > config.maxBodyBytes) {
+        const reply = () => {
+          if (!res.headersSent) sendJson(res, 413, { error: 'request body too large' });
+        };
+        req.on('end', reply);
+        req.on('close', reply); // client aborted first: socket is already gone, no-op send
+        req.resume();
+        return;
+      }
 
-    const batch = validateBatch(parsed, config);
-    if (!batch.ok) {
-      return sendError(res, batch.status, batch.error, batch.index === undefined ? {} : { index: batch.index });
-    }
+      const body = await readBody(req, config.maxBodyBytes);
+      if (!body.ok) {
+        // readBody destroyed the request on overflow; this response is best-effort.
+        return sendError(res, body.status, 'request body too large');
+      }
 
-    const receivedAtIso = now().toISOString(); // one server timestamp per request
-    const docs = batch.events.map((value) =>
-      enrich(value, {
-        app: principal.app,
-        env: principal.env,
-        receivedAtIso,
-        seq: nextSeq(),
-        ttlDays: config.ttlDays,
-      }),
-    );
-    await walWriter.append(docs); // resolves once the events are in the OS buffer of the WAL
-    sendJson(res, 202, { accepted: docs.length });
+      let parsed;
+      try {
+        parsed = JSON.parse(body.buffer.toString('utf8'));
+      } catch {
+        return sendError(res, 400, 'request body is not valid JSON');
+      }
+
+      const batch = validateBatch(parsed, config);
+      if (!batch.ok) {
+        return sendError(res, batch.status, batch.error, batch.index === undefined ? {} : { index: batch.index });
+      }
+
+      const receivedAtIso = now().toISOString(); // one server timestamp per request
+      const docs = batch.events.map((value) =>
+        enrich(value, {
+          app: principal.app,
+          env: principal.env,
+          receivedAtIso,
+          seq: nextSeq(),
+          ttlDays: config.ttlDays,
+        }),
+      );
+      // Reconcile the reservation to the exact bytes that will be written (the
+      // enriched docs are larger than the raw body); keeps total + pending exact.
+      const actual = payloadBytes(docs);
+      pendingBytes += actual - reserved;
+      reserved = actual;
+      await walWriter.append(docs); // resolves once the events are in the OS buffer of the WAL
+      sendJson(res, 202, { accepted: docs.length });
+    } finally {
+      pendingBytes -= reserved;
+    }
   });
 
   router.add('GET', '/v1/logs', async (req, res, url) => {
@@ -126,7 +175,7 @@ export function buildApp(config, deps) {
     if (!collection) return;
     const parsed = parseLogsQuery(url.searchParams);
     if (!parsed.ok) return sendError(res, 400, parsed.error);
-    sendJson(res, 200, await runLogsQuery(collection, parsed.value));
+    sendJson(res, 200, await runLogsQuery(collection, parsed.value, { maxTimeMS: config.queryMaxTimeMs }));
   });
 
   router.add('GET', '/v1/stats', async (req, res, url) => {

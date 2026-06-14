@@ -106,9 +106,26 @@ export async function createWalWriter({ dir, fsyncMs, segmentMaxBytes, budgetByt
     return enqueue(syncIfDirty);
   }
 
+  // Delete a single flushed segment file and keep totalBytes() exact. Returns
+  // true on success; a transient failure (e.g. Windows lock) is swallowed so the
+  // next janitor run retries.
+  async function reclaimSegment(seq, name, knownSize) {
+    try {
+      await unlink(join(dir, name));
+    } catch {
+      return false;
+    }
+    total -= sizes.get(seq) ?? knownSize;
+    sizes.delete(seq);
+    return true;
+  }
+
   async function janitor(checkpoint) {
     const cutoff = Date.now() - retainHours * 3_600_000;
     const deleted = [];
+    // Flushed (seq < checkpoint), non-active segments that survive the retain
+    // pass, kept oldest-first for the budget-pressure pass below.
+    const retained = [];
     for (const name of await readdir(dir)) {
       const m = SEGMENT_RE.exec(name);
       if (!m) continue;
@@ -121,15 +138,26 @@ export async function createWalWriter({ dir, fsyncMs, segmentMaxBytes, budgetByt
       } catch {
         continue;
       }
-      if (st.mtimeMs >= cutoff) continue;
-      try {
-        await unlink(file);
-      } catch {
-        continue; // e.g. transient Windows lock — retried on the next janitor run
+      if (st.mtimeMs >= cutoff) {
+        retained.push({ seq, name, size: st.size });
+        continue;
       }
-      total -= sizes.get(seq) ?? st.size;
-      sizes.delete(seq);
-      deleted.push(name);
+      if (await reclaimSegment(seq, name, st.size)) deleted.push(name);
+    }
+
+    // Budget-pressure override: the disk budget caps total on-disk bytes, so it
+    // outranks retainHours. Already-flushed data (seq < checkpoint) is safe to
+    // drop because Mongo has it; reclaim oldest-first only until back under
+    // budget. Unflushed backlog (seq >= checkpoint) is never touched here, so a
+    // real Mongo outage still backs ingest off via overBudget(). Without this a
+    // healthy zero-backlog server would 429 forever once retained flushed
+    // segments exceeded the budget.
+    if (total >= budgetBytes) {
+      retained.sort((a, b) => a.seq - b.seq); // oldest first (seq strictly increasing)
+      for (const seg of retained) {
+        if (total < budgetBytes) break;
+        if (await reclaimSegment(seg.seq, seg.name, seg.size)) deleted.push(seg.name);
+      }
     }
     return { deleted };
   }
