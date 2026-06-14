@@ -1,14 +1,20 @@
 # Timber — central log service (see README.md / USAGE.md).
 #
-# Required env — copy `.env.example` to `.env` next to this compose file (never commit `.env`):
-#   cp .env.example .env   # then edit the keys/URI
+# Self-contained stack: the `timber` service + a bundled `mongo`. Just provide keys:
+#   cp .env.example .env   # then set TIMBER_KEYS
+#   docker compose up -d --build
 #
-#   MONGODB_URI   Mongo/Atlas connection string, e.g. mongodb+srv://user:pass@cluster/...
-#                 Unset => ingest still works (events durable in the WAL), but query
-#                 endpoints answer 503 and the flusher idles until it is set.
+# Required env (in `.env`):
 #   TIMBER_KEYS   JSON array of API keys, e.g.
 #                 [{"key":"w-dd-prod-CHANGE_ME","app":"dailyDashboard","env":"prod","mode":"write"},
 #                  {"key":"r-assistant-CHANGE_ME","app":"assistant","env":"prod","mode":"read"}]
+#
+# Storage: set MONGODB_URI in `.env` (it ships pointing at the bundled mongo below:
+#   mongodb://mongo:27017). To use Atlas instead, change it in `.env`
+#   (mongodb+srv://user:pass@cluster/...). It is injected via env_file, NOT compose
+#   ${...} interpolation, on purpose: interpolation would let an ambient MONGODB_URI
+#   exported in the operator's shell silently override the bundled DB. Unset =>
+#   ingest still works (events durable in the WAL), queries answer 503 until storage is up.
 #
 # Optional env (defaults in parentheses — full table in USAGE.md):
 #   PORT (7710), TIMBER_HOST (0.0.0.0), TIMBER_DB (appLogs), TIMBER_COLLECTION (events),
@@ -28,6 +34,9 @@ services:
     env_file:
       - path: .env
         required: false
+    depends_on:
+      mongo:
+        condition: service_healthy
     ports:
       - "7710:7710"
     volumes:
@@ -39,17 +48,27 @@ services:
         max-size: "10m"
         max-file: "3"
 
-  # Local Mongo for development — production uses Atlas via MONGODB_URI.
-  # Uncomment this service (and the timber-mongo volume below), then set
-  # MONGODB_URI=mongodb://mongo:27017 in .env.
-  # mongo:
-  #   image: mongo:8
-  #   ports:
-  #     - "27017:27017"
-  #   volumes:
-  #     - timber-mongo:/data/db
-  #   restart: unless-stopped
+  # Bundled MongoDB. Internal to the compose network only (no host port published),
+  # so it never clashes with another mongo already on the host's 27017. Reach it from
+  # the host for debugging with: docker compose exec mongo mongosh
+  mongo:
+    image: mongo:8
+    command: ["--quiet"]
+    volumes:
+      - timber-mongo:/data/db
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 volumes:
   timber-wal:
-  # timber-mongo:
+  timber-mongo:
