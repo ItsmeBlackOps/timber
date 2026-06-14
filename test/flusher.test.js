@@ -412,3 +412,47 @@ test('empty WAL: status() starts clean, drains to caughtUp without inserts; boot
     await flusher.stop();
   }
 });
+
+test('start() after a completed stop() resumes flushing (loop not permanently dead)', async () => {
+  // batch2 is added only AFTER the first stop, so it can only be flushed if the
+  // restart genuinely spins the loop back up.
+  const batches = [{ at: { segmentSeq: 0, offset: 0 }, docs: [makeDoc(1), makeDoc(2)], next: { segmentSeq: 1, offset: 240 } }];
+  const wal = makeWal(batches);
+  const coll = makeCollection();
+  const flusher = createFlusher({ walDir: WAL_DIR, getCollection: () => coll, batchSize: 100, intervalMs: 5, walOps: wal.ops });
+
+  flusher.start();
+  await waitFor(() => flusher.status().flushedTotal === 2, { label: 'batch1 flushed' });
+  await flusher.stop();
+  assert.equal(flusher.status().running, false);
+
+  batches.push({ at: { segmentSeq: 1, offset: 240 }, docs: [makeDoc(3), makeDoc(4)], next: { segmentSeq: 2, offset: 480 } });
+  flusher.start();
+  assert.equal(flusher.status().running, true);
+  try {
+    await waitFor(() => flusher.status().flushedTotal === 4, { label: 'batch2 flushed after restart' });
+  } finally {
+    await flusher.stop();
+  }
+});
+
+test('start() issued during a pending stop() keeps the loop alive (not a silent no-op)', async () => {
+  const batches = [{ at: { segmentSeq: 0, offset: 0 }, docs: [makeDoc(1)], next: { segmentSeq: 1, offset: 120 } }];
+  const wal = makeWal(batches);
+  const coll = makeCollection();
+  const flusher = createFlusher({ walDir: WAL_DIR, getCollection: () => coll, batchSize: 100, intervalMs: 5, walOps: wal.ops });
+
+  flusher.start();
+  await waitFor(() => flusher.status().flushedTotal === 1, { label: 'batch1 flushed' });
+  const stopping = flusher.stop(); // do NOT await yet
+  flusher.start(); // race: start while the prior stop is still settling
+  await stopping;
+
+  assert.equal(flusher.status().running, true, 'a loop is alive after the start/stop race');
+  batches.push({ at: { segmentSeq: 1, offset: 120 }, docs: [makeDoc(2)], next: { segmentSeq: 2, offset: 240 } });
+  try {
+    await waitFor(() => flusher.status().flushedTotal === 2, { label: 'new work flushed by the surviving loop' });
+  } finally {
+    await flusher.stop();
+  }
+});

@@ -132,7 +132,7 @@ test('ConfigError: non-numeric / non-positive numerics name the variable', (t) =
     ['PORT', '0'],
     ['PORT', '-5'],
     ['TIMBER_WAL_BUDGET_MB', 'big'],
-    ['TIMBER_WAL_FSYNC_MS', '0'],
+    ['TIMBER_WAL_FSYNC_MS', 'fast'], // non-numeric still throws; 0/negative clamp (see clamp test)
     ['TIMBER_WAL_SEGMENT_MB', '-1'],
     ['TIMBER_WAL_RETAIN_HOURS', 'soon'],
     ['TIMBER_TTL_INFO_DAYS', '0'],
@@ -152,6 +152,27 @@ test('ConfigError: non-numeric / non-positive numerics name the variable', (t) =
 test('clusterWorkers accepts explicit 0 (its documented default = off)', (t) => {
   quietStderr(t);
   assert.equal(loadConfig({ TIMBER_CLUSTER: '0' }).clusterWorkers, 0);
+});
+
+test('clamped fields coerce out-of-range values to the bound (C1 "clamp 1..1000"), never throw', (t) => {
+  quietStderr(t);
+  // 0 and negative coerce up to the floor (1); over-max coerces down to the cap.
+  assert.equal(loadConfig({ TIMBER_WAL_FSYNC_MS: '0' }).walFsyncMs, 1);
+  assert.equal(loadConfig({ TIMBER_WAL_FSYNC_MS: '-5' }).walFsyncMs, 1);
+  assert.equal(loadConfig({ TIMBER_WAL_FSYNC_MS: '5000' }).walFsyncMs, 1000);
+  assert.equal(loadConfig({ TIMBER_FLUSH_BATCH: '0' }).flushBatchSize, 1);
+  assert.equal(loadConfig({ TIMBER_FLUSH_BATCH: '999999' }).flushBatchSize, 1000);
+  // queryMaxTimeMs clamps with a floor of 0 (0 disables the cap).
+  assert.equal(loadConfig({ TIMBER_QUERY_MAX_TIME_MS: '-1' }).queryMaxTimeMs, 0);
+  assert.equal(loadConfig({ TIMBER_QUERY_MAX_TIME_MS: '0' }).queryMaxTimeMs, 0);
+  // non-numeric is a typo, not a bound — still throws.
+  assert.throws(() => loadConfig({ TIMBER_FLUSH_BATCH: 'lots' }), ConfigError);
+});
+
+test('host: default 0.0.0.0, overridable via TIMBER_HOST', (t) => {
+  quietStderr(t);
+  assert.equal(loadConfig({}).host, '0.0.0.0');
+  assert.equal(loadConfig({ TIMBER_HOST: '127.0.0.1' }).host, '127.0.0.1');
 });
 
 test('ConfigError: malformed TIMBER_KEYS JSON', (t) => {

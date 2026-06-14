@@ -66,7 +66,7 @@ All configuration is via environment variables (`PORT`, `MONGODB_URI`,
 ### Docker
 
 ```bash
-touch .env          # then set MONGODB_URI + TIMBER_KEYS in it (see docker-compose.yml comments)
+cp .env.example .env   # then set TIMBER_KEYS (+ MONGODB_URI) in it
 docker compose up -d --build
 curl -s http://localhost:7710/healthz
 ```

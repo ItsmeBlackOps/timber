@@ -23,7 +23,7 @@ import { createFlusher } from './flusher.js';
 import { connectMongo, ensureIndexes } from './mongo.js';
 import { parseLogsQuery, runLogsQuery } from './query/logs.js';
 import { parseStatsQuery, runStats } from './query/stats.js';
-import { runEvents } from './query/events.js';
+import { parseEventsQuery, runEvents } from './query/events.js';
 
 // Read once at startup (C11). Buffer, so content-length is exact bytes.
 const UI_HTML = readFileSync(new URL('./ui/index.html', import.meta.url));
@@ -37,6 +37,23 @@ const UI_HTML = readFileSync(new URL('./ui/index.html', import.meta.url));
 const nextSeq = createSeqGenerator();
 
 const log = (msg) => process.stderr.write(`[timber] ${msg}\n`);
+
+// /healthz is unauthenticated (Docker HEALTHCHECK + the UI's connection probe),
+// so the flusher's raw lastError — which can carry WAL filesystem paths, the
+// Mongo URI host, and db/collection names — must not be echoed verbatim. Collapse
+// it to a coarse category that still tells an operator what class of failure is
+// happening. Detailed errors remain in the server's stderr log.
+function healthErrorCategory(msg) {
+  if (!msg) return null;
+  const s = String(msg);
+  if (/E11000|duplicate key/i.test(s)) return 'duplicate key';
+  if (/ECONNREFUSED|ENOTFOUND|EAI_AGAIN|server ?selection|topology|getaddrinfo|connect|refused|unreachable/i.test(s)) {
+    return 'storage unreachable';
+  }
+  if (/timed out|timeout|exceeded time limit|maxTimeMS/i.test(s)) return 'storage timeout';
+  if (/ENOSPC|EACCES|EPERM|EDQUOT|disk/i.test(s)) return 'wal write error';
+  return 'flush error';
+}
 
 export function buildApp(config, deps) {
   const { keyring, walWriter, flusher, getCollection, now } = deps;
@@ -78,6 +95,7 @@ export function buildApp(config, deps) {
   router.add('GET', '/healthz', async (req, res) => {
     const checkpoint = await loadCheckpoint(config.walDir);
     const backlog = await backlogBytes(config.walDir, checkpoint);
+    const fstatus = flusher.status();
     sendJson(res, 200, {
       ok: true,
       wal: {
@@ -85,7 +103,7 @@ export function buildApp(config, deps) {
         backlogBytes: backlog,
         overBudget: walWriter.overBudget(),
       },
-      flusher: flusher.status(),
+      flusher: { ...fstatus, lastError: healthErrorCategory(fstatus.lastError) },
       mongo: { connected: getCollection() != null },
     });
   });
@@ -183,13 +201,15 @@ export function buildApp(config, deps) {
     if (!collection) return;
     const parsed = parseStatsQuery(url.searchParams);
     if (!parsed.ok) return sendError(res, 400, parsed.error);
-    sendJson(res, 200, await runStats(collection, parsed.value));
+    sendJson(res, 200, await runStats(collection, parsed.value, { maxTimeMS: config.queryMaxTimeMs }));
   });
 
   router.add('GET', '/v1/events', async (req, res, url) => {
     const collection = readGate(req, res);
     if (!collection) return;
-    sendJson(res, 200, await runEvents(collection, { app: url.searchParams.get('app') ?? undefined }));
+    const parsed = parseEventsQuery(url.searchParams);
+    if (!parsed.ok) return sendError(res, 400, parsed.error);
+    sendJson(res, 200, await runEvents(collection, parsed.value, { maxTimeMS: config.queryMaxTimeMs }));
   });
 
   router.add('GET', '/', (req, res) => {
@@ -268,12 +288,12 @@ export async function main() {
 
   await new Promise((resolveListen, rejectListen) => {
     server.once('error', rejectListen);
-    server.listen(config.port, () => {
+    server.listen(config.port, config.host, () => {
       server.off('error', rejectListen);
       resolveListen();
     });
   });
-  log(`listening on :${config.port} (wal: ${config.walDir})`);
+  log(`listening on ${config.host}:${config.port} (wal: ${config.walDir})`);
 
   // Background Mongo connect loop: ingest never waits on storage (PRD §7.3).
   if (config.mongodbUri) {

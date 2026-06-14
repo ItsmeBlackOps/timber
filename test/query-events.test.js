@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { runEvents } from '../src/query/events.js';
+import { runEvents, parseEventsQuery } from '../src/query/events.js';
 import { createFakeCollection } from './helpers/fake-collection.js';
 
 function seededCollection() {
@@ -50,6 +50,30 @@ test('empty collection returns {apps:{}}', async () => {
   const col = createFakeCollection();
   const out = await runEvents(col, {});
   assert.deepEqual(out, { apps: {} });
+});
+
+test('parseEventsQuery: rejects unknown params (parity with logs/stats), passes app through', () => {
+  assert.deepEqual(parseEventsQuery(new URLSearchParams('')), { ok: true, value: {} });
+  assert.deepEqual(parseEventsQuery(new URLSearchParams('app=web')), { ok: true, value: { app: 'web' } });
+  const bad = parseEventsQuery(new URLSearchParams('event=ai.'));
+  assert.equal(bad.ok, false);
+  assert.match(bad.error, /unknown parameter: event/);
+});
+
+test('runEvents passes maxTimeMS to aggregate when set, omits it otherwise', async () => {
+  const calls = [];
+  const stub = {
+    aggregate(pipeline, opts) {
+      calls.push(opts);
+      return { async toArray() { return []; } };
+    },
+  };
+  await runEvents(stub, {}, { maxTimeMS: 5000 });
+  await runEvents(stub, {}, { maxTimeMS: 0 }); // 0 disables → no opts
+  await runEvents(stub, {});
+  assert.deepEqual(calls[0], { maxTimeMS: 5000 });
+  assert.equal(calls[1], undefined);
+  assert.equal(calls[2], undefined);
 });
 
 test('issues the exact C10 pipeline, with and without app match', async () => {

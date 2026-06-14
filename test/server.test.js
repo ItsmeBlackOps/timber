@@ -96,7 +96,13 @@ function makeFakeFlusher() {
 // Builds a full app on an ephemeral port with fake deps; auto-teardown via t.after.
 async function makeApp(
   t,
-  { collection = null, now = () => new Date(FIXED_ISO), walWriter: walWriterOverride, budgetMb } = {},
+  {
+    collection = null,
+    now = () => new Date(FIXED_ISO),
+    walWriter: walWriterOverride,
+    budgetMb,
+    flusher: flusherOverride,
+  } = {},
 ) {
   const walDir = await mkTmpDir('timber-server-test-');
   const config = loadConfig({
@@ -108,7 +114,7 @@ async function makeApp(
     ]),
   });
   const walWriter = walWriterOverride ?? makeFakeWalWriter();
-  const flusher = makeFakeFlusher();
+  const flusher = flusherOverride ?? makeFakeFlusher();
   let coll = collection;
   const { server, shutdown } = buildApp(config, {
     keyring: createKeyring(config.keys),
@@ -637,6 +643,34 @@ test('GET /v1/events: 401 / 503 / 200 with per-app sorted event names', async (t
     await req(app.port, 'GET', '/v1/events?app=ghost', { headers: auth(READ_KEY) }),
   );
   assert.deepEqual(none, { apps: {} });
+});
+
+test('GET /v1/events rejects unknown query params with 400 (parity with logs/stats)', async (t) => {
+  const app = await makeApp(t, { collection: seededCollection() });
+  const r = await req(app.port, 'GET', '/v1/events?bogus=1', { headers: auth(READ_KEY) });
+  assert.equal(r.status, 400);
+  assert.match(jsonOf(r).error, /unknown parameter: bogus/);
+});
+
+test('GET /healthz sanitizes flusher.lastError to a category (no path/secret leak)', async (t) => {
+  // A realistic raw flusher error leaking a WAL path + Mongo namespace + URI host.
+  const leaky =
+    'MongoServerError: connection refused to mongodb+srv://admin:s3cr3t@cluster0.abc.mongodb.net writing C:/data/wal/seg-0000000000007.ndjson into appLogs.events';
+  const flusher = {
+    started: false,
+    stopped: false,
+    start() {},
+    stop: async () => {},
+    status: () => ({ running: true, caughtUp: false, lastError: leaky, flushedTotal: 0 }),
+  };
+  const app = await makeApp(t, { flusher });
+  const body = jsonOf(await req(app.port, 'GET', '/healthz'));
+  assert.equal(body.flusher.lastError, 'storage unreachable');
+  // The raw string's secrets must not appear anywhere in the response.
+  const raw = JSON.stringify(body);
+  for (const leak of ['s3cr3t', 'mongodb.net', 'appLogs.events', 'seg-0000000000007', 'C:/data/wal']) {
+    assert.equal(raw.includes(leak), false, `healthz leaked: ${leak}`);
+  }
 });
 
 // --- UI + 404 ---------------------------------------------------------------------

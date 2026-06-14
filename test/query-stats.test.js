@@ -287,4 +287,21 @@ describe('runStats', () => {
       buckets: [],
     });
   });
+
+  it('passes maxTimeMS to aggregate when set, omits it otherwise', async () => {
+    const calls = [];
+    const stub = {
+      aggregate(pipeline, opts) {
+        calls.push(opts);
+        return { async toArray() { return []; } };
+      },
+    };
+    const v = { group: 'hour', from: new Date('2026-06-11T00:00:00Z'), to: new Date('2026-06-11T01:00:00Z') };
+    await runStats(stub, v, { maxTimeMS: 5000 });
+    await runStats(stub, v, { maxTimeMS: 0 });
+    await runStats(stub, v);
+    assert.deepStrictEqual(calls[0], { maxTimeMS: 5000 });
+    assert.equal(calls[1], undefined);
+    assert.equal(calls[2], undefined);
+  });
 });

@@ -39,32 +39,37 @@ function errorMessage(err) {
 
 export function createFlusher({ walDir, getCollection, batchSize, intervalMs, log, walOps }) {
   const emit = typeof log === 'function' ? log : () => {};
-  let running = false;
-  let stopRequested = false;
   let caughtUp = false;
   let lastError = null;
   let flushedTotal = 0;
-  let loopPromise = null;
-  let wake = null;
+  // Per-generation control token of the live loop, or null when stopped. Each
+  // start() owns its own `stopped` flag (closure-captured below), so a start()
+  // that races a not-yet-finished stop() spins up a fresh loop rather than being
+  // a silent no-op — and the prior stop() can never cancel the new loop, because
+  // they key off different tokens. New generations chain after the previous
+  // token's promise so two loops never run concurrently.
+  let active = null;
+  let tail = Promise.resolve();
 
-  function sleep(ms) {
-    if (stopRequested) return Promise.resolve();
-    return new Promise((resolve) => {
-      const timer = setTimeout(finish, ms);
-      function finish() {
-        clearTimeout(timer);
-        wake = null;
-        resolve();
-      }
-      wake = finish; // stop() calls this to abort the wait immediately
-    });
-  }
-
-  async function runLoop() {
+  async function runLoop(token) {
     let ops = null;
     let checkpoint = null; // loaded once, then kept in memory
     let backoffMs = BACKOFF_MIN_MS;
-    while (!stopRequested) {
+
+    function sleep(ms) {
+      if (token.stopped) return Promise.resolve();
+      return new Promise((resolve) => {
+        const timer = setTimeout(finish, ms);
+        function finish() {
+          clearTimeout(timer);
+          token.wake = null;
+          resolve();
+        }
+        token.wake = finish; // stop() calls this to abort the wait immediately
+      });
+    }
+
+    while (!token.stopped) {
       try {
         if (!ops) ops = walOps ?? (await loadRealWalOps());
         if (!checkpoint) checkpoint = await ops.loadCheckpoint(walDir);
@@ -114,23 +119,25 @@ export function createFlusher({ walDir, getCollection, batchSize, intervalMs, lo
   }
 
   function start() {
-    if (running) return;
-    running = true;
-    stopRequested = false;
-    loopPromise = runLoop().finally(() => {
-      running = false;
-    });
+    if (active) return;
+    const token = { stopped: false, wake: null };
+    // Chain after the previous generation's teardown so two loops never overlap.
+    token.promise = tail.then(() => (token.stopped ? undefined : runLoop(token)));
+    tail = token.promise;
+    active = token;
   }
 
   async function stop() {
-    stopRequested = true;
-    if (wake) wake();
-    await loopPromise;
-    loopPromise = null;
+    const token = active;
+    if (!token) return;
+    active = null;
+    token.stopped = true;
+    if (token.wake) token.wake();
+    await token.promise; // only this generation, never a later start()'s loop
   }
 
   function status() {
-    return { running, caughtUp, lastError, flushedTotal };
+    return { running: active !== null, caughtUp, lastError, flushedTotal };
   }
 
   return { start, stop, status };

@@ -89,8 +89,11 @@ export function buildStatsPipeline({ group, from, to, app, event }) {
 
 const round6 = (n) => Math.round(n * 1e6) / 1e6;
 
-export async function runStats(collection, value) {
-  const rows = await collection.aggregate(buildStatsPipeline(value)).toArray();
+export async function runStats(collection, value, { maxTimeMS } = {}) {
+  // maxTimeMS caps unindexed aggregation scans server-side (defense-in-depth,
+  // same as runLogsQuery); 0/absent leaves it uncapped.
+  const opts = Number.isFinite(maxTimeMS) && maxTimeMS > 0 ? { maxTimeMS } : undefined;
+  const rows = await collection.aggregate(buildStatsPipeline(value), opts).toArray();
   const buckets = rows.map((row) => {
     // No numeric latency inputs in a bucket ⇒ fake collection yields [null,null,null],
     // real $percentile may yield bare null — both mean "no latency data".

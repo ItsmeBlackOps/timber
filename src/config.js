@@ -34,9 +34,18 @@ function positiveInt(env, name, def) {
   return v;
 }
 
+// Contract C1: these fields "clamp" into [lo, hi]. Clamp means coerce, not
+// reject — a 0 or negative value lands on `lo` rather than throwing, so an
+// operator who sets TIMBER_FLUSH_BATCH=0 gets the documented minimum instead of
+// a startup crash. Non-numeric still throws (that is a typo, not a bound).
 function clampedInt(env, name, def, lo, hi) {
-  const v = Math.floor(readNumber(env, name, def));
-  return Math.min(hi, Math.max(lo, v));
+  const s = rawEnv(env, name);
+  if (s === undefined) return def;
+  const n = Number(s);
+  if (!Number.isFinite(n)) {
+    throw new ConfigError(`${name} must be numeric, got ${JSON.stringify(s)}`);
+  }
+  return Math.min(hi, Math.max(lo, Math.floor(n)));
 }
 
 function mbEnvToBytes(env, name, defMb) {
@@ -84,6 +93,10 @@ function parseKeys(env) {
 export function loadConfig(env = process.env) {
   return Object.freeze({
     port: positiveInt(env, 'PORT', 7710),
+    // PRD §10: Timber binds to the VM's internal network, exposed via nginx. The
+    // bind address is configurable; default 0.0.0.0 preserves container behavior
+    // (published port behind the gateway). Set 127.0.0.1 for a safe host-run.
+    host: strEnv(env, 'TIMBER_HOST', '0.0.0.0'),
     mongodbUri: rawEnv(env, 'MONGODB_URI') ?? null,
     mongoDbName: strEnv(env, 'TIMBER_DB', 'appLogs'),
     mongoCollectionName: strEnv(env, 'TIMBER_COLLECTION', 'events'),

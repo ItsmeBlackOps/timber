@@ -1,6 +1,7 @@
 # Timber — central log service (see README.md / USAGE.md).
 #
-# Required env — put these in a `.env` file next to this compose file (never commit it):
+# Required env — copy `.env.example` to `.env` next to this compose file (never commit `.env`):
+#   cp .env.example .env   # then edit the keys/URI
 #
 #   MONGODB_URI   Mongo/Atlas connection string, e.g. mongodb+srv://user:pass@cluster/...
 #                 Unset => ingest still works (events durable in the WAL), but query
@@ -10,18 +11,23 @@
 #                  {"key":"r-assistant-CHANGE_ME","app":"assistant","env":"prod","mode":"read"}]
 #
 # Optional env (defaults in parentheses — full table in USAGE.md):
-#   PORT (7710), TIMBER_DB (appLogs), TIMBER_COLLECTION (events),
+#   PORT (7710), TIMBER_HOST (0.0.0.0), TIMBER_DB (appLogs), TIMBER_COLLECTION (events),
 #   TIMBER_WAL_DIR (/data/wal in this image), TIMBER_WAL_BUDGET_MB (2048),
 #   TIMBER_WAL_FSYNC_MS (50), TIMBER_WAL_SEGMENT_MB (64), TIMBER_WAL_RETAIN_HOURS (24),
 #   TIMBER_TTL_DEBUG_DAYS (7), TIMBER_TTL_INFO_DAYS (30),
 #   TIMBER_TTL_WARN_DAYS (90), TIMBER_TTL_ERROR_DAYS (90),
-#   TIMBER_FLUSH_BATCH (1000), TIMBER_FLUSH_INTERVAL_MS (200), TIMBER_CLUSTER (0)
+#   TIMBER_FLUSH_BATCH (1000), TIMBER_FLUSH_INTERVAL_MS (200),
+#   TIMBER_QUERY_MAX_TIME_MS (5000), TIMBER_CLUSTER (0)
 
 services:
   timber:
     build: .
     image: timber:latest   # deploy: replace with a registry ref and `docker compose pull && up -d`
-    env_file: .env
+    # required:false (Compose >= 2.24): a missing .env degrades to a clear in-app
+    # config error (startup warning + 401s) instead of a hard compose failure.
+    env_file:
+      - path: .env
+        required: false
     ports:
       - "7710:7710"
     volumes:

@@ -358,6 +358,7 @@ secret-looking keys before sending.
 | variable | default | meaning |
 |---|---|---|
 | `PORT` | `7710` | HTTP listen port |
+| `TIMBER_HOST` | `0.0.0.0` | bind address (PRD §10: internal network behind nginx). Set `127.0.0.1` for a host-only run |
 | `MONGODB_URI` | *(unset)* | Mongo/Atlas connection string. Unset ⇒ ingest works (WAL only), queries `503`, flusher idles |
 | `TIMBER_DB` | `appLogs` | Mongo database name |
 | `TIMBER_COLLECTION` | `events` | Mongo collection name |
@@ -373,6 +374,7 @@ secret-looking keys before sending.
 | `TIMBER_TTL_ERROR_DAYS` | `90` | … for `error` |
 | `TIMBER_FLUSH_BATCH` | `1000` | flusher `insertMany` batch size, clamped 1..1000 |
 | `TIMBER_FLUSH_INTERVAL_MS` | `200` | flusher idle poll interval |
+| `TIMBER_QUERY_MAX_TIME_MS` | `5000` | server-side `maxTimeMS` cap on read queries (regex/scan guard); `0` disables |
 | `TIMBER_CLUSTER` | `0` | `>0` forks N workers (`node:cluster`), one WAL subdir per worker. Off by default |
 
 ---
@@ -384,7 +386,7 @@ secret-looking keys before sending.
 | `200` | queries, healthz, UI | OK |
 | `202` | `POST /v1/logs` | `{"accepted":n}` — durably in the WAL |
 | `400` | all | invalid envelope (`{"error":...,"index":n}`), bad JSON, or bad query param |
-| `401` | all `/v1/*` | unknown/missing key (`WWW-Authenticate: Bearer` on ingest) |
+| `401` | all `/v1/*` | unknown/missing key (every `/v1/*` 401 sends `WWW-Authenticate: Bearer`) |
 | `403` | `POST /v1/logs` | read-mode key cannot ingest |
 | `404` | * | `{"error":"not found"}` |
 | `413` | `POST /v1/logs` | body > 1 MB or batch > 500 events |
