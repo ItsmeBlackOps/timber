@@ -282,6 +282,84 @@ curl -s "$TIMBER_URL/v1/events?app=scraper" -H "Authorization: Bearer $TIMBER_KE
 
 ---
 
+## Facet keys — `GET /v1/facets` (read or write key)
+
+Which `ids.<key>` and `data.<path>` keys actually occur in a time window — so a UI
+(or you) can discover the correlation ids and payload fields available to filter on
+without knowing the schema up front. Params: `from`/`to` (ISO-8601 or epoch-ms;
+default: last 24 h), `app` (exact). Unknown params ⇒ `400`.
+
+```bash
+curl -s "$TIMBER_URL/v1/facets?app=dailyDashboard&from=2026-06-11T00:00:00Z&to=2026-06-12T00:00:00Z" \
+  -H "Authorization: Bearer $TIMBER_KEY"
+```
+
+```json
+{
+  "window": { "from": "2026-06-11T00:00:00.000Z", "to": "2026-06-12T00:00:00.000Z" },
+  "idsKeys": ["requestId", "taskId", "userEmail"],
+  "dataPaths": ["costUsd", "latencyMs", "model", "status"]
+}
+```
+
+- `window` — the resolved scan window (echoes the defaults when `from`/`to` are omitted).
+- `idsKeys` — distinct keys seen under `ids` across matching events, sorted.
+- `dataPaths` — distinct top-level keys seen under `data`, sorted.
+
+Use a discovered key to drill in with `/v1/logs` (`ids.userEmail=…`) or to break a
+window down with `/v1/groupby` (below).
+
+---
+
+## Group & count — `GET /v1/groupby` (read or write key)
+
+Count documents grouped by a single field, over the **same filter surface as
+`/v1/logs`** — for "errors by user", "volume by service", "spend by model" style
+breakdowns. Returns the top groups by count plus an `otherCount` rollup of the tail.
+
+Params:
+
+| param | meaning |
+|---|---|
+| `by` | **required** field to group on: `app`, `env`, `level`, `event`, or any `ids.<key>` / `data.<path>`. Anything else (incl. `$`-prefixed injection) ⇒ `400 {"error":"invalid by field"}` |
+| `limit` | number of groups returned, 1..100, default 20. The rest fold into `otherCount` |
+| `like` | optional case-insensitive substring filter on the **grouped values** (value autocomplete), ≤ 128 chars |
+| *filters* | every `/v1/logs` filter applies: `app`, `env`, `level`, `event`, `from`/`to`, `q`, `ids.<key>`, `data.<path>` (+ `__gte`/`__lte`). `cursor` is not accepted |
+
+```bash
+# which users hit the most errors in the last 24 h
+curl -s "$TIMBER_URL/v1/groupby?by=ids.userEmail&level=error" \
+  -H "Authorization: Bearer $TIMBER_KEY"
+```
+
+```json
+{
+  "by": "ids.userEmail",
+  "total": 137,
+  "groups": [
+    { "value": "alice@example.com", "count": 54 },
+    { "value": "bob@example.com",   "count": 31 }
+  ],
+  "otherCount": 52
+}
+```
+
+- `total` — documents matched by the filter (sum across **all** groups, before `limit`).
+- `groups` — the top `limit` groups, count-desc (ties broken by value asc).
+- `otherCount` — `total` minus the shown groups' counts (`0` when nothing was dropped).
+
+```bash
+# event volume by service (app), last hour
+curl -s "$TIMBER_URL/v1/groupby?by=app&from=2026-06-11T13:00:00Z&to=2026-06-11T14:00:00Z" \
+  -H "Authorization: Bearer $TIMBER_KEY"
+
+# spend leaders by model, narrowed to model names containing "opus"
+curl -s "$TIMBER_URL/v1/groupby?by=data.model&like=opus&event=ai." \
+  -H "Authorization: Bearer $TIMBER_KEY"
+```
+
+---
+
 ## Health — `GET /healthz` (no auth)
 
 ```bash

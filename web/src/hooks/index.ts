@@ -1,0 +1,10 @@
+// Public hook surface (contract C-F8). Import from '@/hooks'.
+export { useLogs } from './useLogs'
+export { useLiveTail } from './useLiveTail'
+export { useStats } from './useStats'
+export type { TimeRange } from './useStats'
+export { useEvents } from './useEvents'
+export { useFacets } from './useFacets'
+export { useGroupBy } from './useGroupBy'
+export type { UseGroupByOptions } from './useGroupBy'
+export { useHealth } from './useHealth'

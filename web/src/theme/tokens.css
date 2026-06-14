@@ -12,6 +12,7 @@
   --tb-info: #2563EB;
   --tb-warn: #B7791F;
   --tb-error: #DC2626;
+  --tb-ok: #16A34A;
 }
 :root[data-theme="dark"] {
   --tb-bg: #0B0C10;
@@ -25,6 +26,7 @@
   --tb-info: #5B95F7;
   --tb-warn: #E6A23C;
   --tb-error: #F06A78;
+  --tb-ok: #3FB950;
 }
 html, body, #root { height: 100%; }
 body { margin: 0; background: var(--tb-bg); color: var(--tb-text); font-family: ui-sans-serif, system-ui, sans-serif; }

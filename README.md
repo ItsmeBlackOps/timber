@@ -74,6 +74,31 @@ curl -s http://localhost:7710/healthz
 The WAL lives on the named volume `timber-wal`, so accepted-but-unflushed events
 survive container restarts.
 
+## Console
+
+A richer web console lives in [`web/`](web/) — a TanStack-Router + Vite SPA for
+searching/viewing logs: structured + free-text search, faceted finding ("errors
+by user", "by service"), curated + saved views (the URL is the shareable saved
+search), a live tail, an expandable request/response inspector, a stats dashboard
+(volume, error rate, AI cost/tokens, latency), and an in-app API reference. It is
+read-only and client-side (read key in `localStorage`); it consumes the query API
+over relative URLs (Vite proxy in dev / nginx in prod — no CORS), so the
+framework-free server is untouched. The zero-dep vanilla UI at `/` stays as a
+fallback.
+
+```bash
+node src/server.js                       # repo root: run the API on :7710 (needs MONGODB_URI for queries)
+cd web && npm install && npm run dev     # console dev server, proxying /v1 + /healthz → :7710
+```
+
+Then open the printed URL and paste a **read** key. Build with `cd web && npm run
+build` (output in `web/dist/`, served same-origin behind nginx). Full setup,
+testing, and deploy notes: [`web/README.md`](web/README.md).
+
+Two additive read endpoints back the console's faceting — `GET /v1/facets`
+(discover `ids.*` / `data.*` field names) and `GET /v1/groupby` (counts per value,
+e.g. "errors by user"); both are documented in [USAGE.md](USAGE.md).
+
 ## Tests & benchmarks
 
 ```bash
@@ -93,7 +118,8 @@ a bench smoke (`BENCH_SMOKE=1`) on every push and PR.
 - `src/server.js` — entrypoint: HTTP routes, wiring, graceful shutdown
 - `src/wal/` — segment writer (group-commit fsync), reader, checkpoint
 - `src/flusher.js` — WAL → Mongo `insertMany`, checkpoint advance, boot replay
-- `src/query/` — `/v1/logs` filters + keyset cursor, `/v1/stats`, `/v1/events`
-- `src/ui/index.html` — the whole UI (vanilla JS, no build step)
+- `src/query/` — `/v1/logs` filters + keyset cursor, `/v1/stats`, `/v1/events`, `/v1/facets`, `/v1/groupby`
+- `src/ui/index.html` — the fallback UI (vanilla JS, no build step)
+- `web/` — the Timber Console SPA (TanStack Router + Vite); see `web/README.md`
 - `bench/` — load generator, ingest bench, kill-test
 - `PRD.md` — product spec · `USAGE.md` — endpoint recipes & env reference

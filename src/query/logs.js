@@ -107,17 +107,24 @@ function mergeRange(filter, path, op, n) {
   filter[path] = target;
 }
 
-export function parseLogsQuery(searchParams, limits = {}) {
-  const maxLimit = limits.maxLimit ?? 500;
-  const defaultLimit = limits.defaultLimit ?? 100;
+// Shared filter builder (contract C8 + C-S2): turns the common query surface
+// — app, env, level, event, from, to, q, ids.*, data.* (eq + __gte/__lte) and
+// the keyset cursor — into a Mongo filter. Factored out of parseLogsQuery so
+// /v1/groupby (src/query/groupby.js) can reuse the EXACT same param semantics
+// without re-implementing escaping, date coercion, the ReDoS guard, or the
+// data.* range merge. `limit` is intentionally NOT handled here: it is not a
+// filter clause, and each endpoint clamps it against its own bounds. Returns
+// { ok: true, value: { filter } } or { ok: false, error }.
+export function buildLogsFilter(searchParams) {
   const params = searchParams instanceof URLSearchParams ? searchParams : new URLSearchParams(searchParams);
 
   const filter = {};
   const receivedAtRange = {};
-  let limit = defaultLimit;
 
   for (const [name, value] of params) {
-    if (name === 'app' || name === 'env') {
+    if (name === 'limit') {
+      continue; // pagination/size knob, parsed by the caller (not a filter)
+    } else if (name === 'app' || name === 'env') {
       filter[name] = value;
     } else if (name === 'level') {
       const tokens = value.split(',');
@@ -142,9 +149,6 @@ export function parseLogsQuery(searchParams, limits = {}) {
         return fail('q rejected: nested quantifiers risk catastrophic backtracking');
       }
       filter.message = { $regex: value, $options: 'i' };
-    } else if (name === 'limit') {
-      if (!INT_RE.test(value)) return fail(`invalid limit "${value}"`);
-      limit = Math.min(Math.max(Number(value), 1), maxLimit);
     } else if (name === 'cursor') {
       const c = decodeCursor(value);
       if (c === null) return fail('invalid cursor');
@@ -174,7 +178,27 @@ export function parseLogsQuery(searchParams, limits = {}) {
     filter.receivedAt = receivedAtRange;
   }
 
-  return { ok: true, value: { filter, limit } };
+  return { ok: true, value: { filter } };
+}
+
+export function parseLogsQuery(searchParams, limits = {}) {
+  const maxLimit = limits.maxLimit ?? 500;
+  const defaultLimit = limits.defaultLimit ?? 100;
+  const params = searchParams instanceof URLSearchParams ? searchParams : new URLSearchParams(searchParams);
+
+  // The cursor keyset, regex/date coercion and ids./data. handling live in the
+  // shared builder; parseLogsQuery only adds the logs-specific `limit` clamp.
+  const built = buildLogsFilter(params);
+  if (!built.ok) return built;
+
+  let limit = defaultLimit;
+  const rawLimit = params.get('limit');
+  if (rawLimit !== null) {
+    if (!INT_RE.test(rawLimit)) return fail(`invalid limit "${rawLimit}"`);
+    limit = Math.min(Math.max(Number(rawLimit), 1), maxLimit);
+  }
+
+  return { ok: true, value: { filter: built.value.filter, limit } };
 }
 
 function serializeValue(v) {

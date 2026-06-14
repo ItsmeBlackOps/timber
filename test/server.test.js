@@ -652,6 +652,122 @@ test('GET /v1/events rejects unknown query params with 400 (parity with logs/sta
   assert.match(jsonOf(r).error, /unknown parameter: bogus/);
 });
 
+// --- GET /v1/facets -----------------------------------------------------------
+
+// A seed with varied ids.* / data.* keys across a known window, plus one doc
+// outside the window, so facets discovery and the window default are testable.
+function facetSeededCollection() {
+  const collection = createFakeCollection();
+  const at = (i) => new Date(Date.UTC(2026, 5, 11, 1, 0, i));
+  collection.docs.push(
+    { _id: 'f1', app: 'appA', env: 'prod', event: 'ai.request', level: 'info', receivedAt: at(1),
+      ids: { requestId: 'r1', userEmail: 'al@e.com' }, data: { latencyMs: 10, model: 'opus', status: 200 } },
+    { _id: 'f2', app: 'appA', env: 'prod', event: 'ai.request', level: 'error', receivedAt: at(2),
+      ids: { userEmail: 'al@e.com' }, data: { latencyMs: 50, status: 500 } },
+    { _id: 'f3', app: 'appB', env: 'prod', event: 'db.query', level: 'info', receivedAt: at(3),
+      ids: { requestId: 'r3', traceId: 't3' }, data: { durationMs: 5 } },
+    // outside the default 24h window (well in the past) — must not contribute keys
+    { _id: 'fold', app: 'appA', env: 'prod', event: 'x', level: 'info',
+      receivedAt: new Date(Date.UTC(2026, 0, 1, 0, 0, 0)), ids: { sessionId: 's' }, data: { ancient: 1 } },
+  );
+  return collection;
+}
+
+const FACET_WINDOW = 'from=2026-06-11T00:00:00.000Z&to=2026-06-12T00:00:00.000Z';
+
+test('GET /v1/facets: 401 / 503 / 200 discovers ids and data keys', async (t) => {
+  const noMongo = await makeApp(t);
+  assert.equal((await req(noMongo.port, 'GET', '/v1/facets')).status, 401);
+  assert.equal(
+    (await req(noMongo.port, 'GET', '/v1/facets', { headers: auth(READ_KEY) })).status,
+    503,
+  );
+
+  const app = await makeApp(t, { collection: facetSeededCollection() });
+  const r = await req(app.port, 'GET', `/v1/facets?${FACET_WINDOW}`, { headers: auth(READ_KEY) });
+  assert.equal(r.status, 200);
+  const body = jsonOf(r);
+  assert.deepEqual(body.window, {
+    from: '2026-06-11T00:00:00.000Z',
+    to: '2026-06-12T00:00:00.000Z',
+  });
+  // union across the in-window docs, sorted; sessionId/ancient excluded by window
+  assert.deepEqual(body.idsKeys, ['requestId', 'traceId', 'userEmail']);
+  assert.deepEqual(body.dataPaths, ['durationMs', 'latencyMs', 'model', 'status']);
+});
+
+test('GET /v1/facets scopes discovery to ?app and rejects unknown params (400)', async (t) => {
+  const app = await makeApp(t, { collection: facetSeededCollection() });
+  const onlyB = jsonOf(
+    await req(app.port, 'GET', `/v1/facets?app=appB&${FACET_WINDOW}`, { headers: auth(READ_KEY) }),
+  );
+  assert.deepEqual(onlyB.idsKeys, ['requestId', 'traceId']);
+  assert.deepEqual(onlyB.dataPaths, ['durationMs']);
+
+  const bad = await req(app.port, 'GET', '/v1/facets?bogus=1', { headers: auth(READ_KEY) });
+  assert.equal(bad.status, 400);
+  assert.equal(typeof jsonOf(bad).error, 'string');
+});
+
+// --- GET /v1/groupby ----------------------------------------------------------
+
+test('GET /v1/groupby: 401 / 503 / 400 (missing & invalid by)', async (t) => {
+  const noMongo = await makeApp(t);
+  assert.equal((await req(noMongo.port, 'GET', '/v1/groupby?by=app')).status, 401);
+  assert.equal(
+    (await req(noMongo.port, 'GET', '/v1/groupby?by=app', { headers: auth(READ_KEY) })).status,
+    503,
+  );
+
+  const app = await makeApp(t, { collection: facetSeededCollection() });
+  // missing `by`
+  const missing = await req(app.port, 'GET', '/v1/groupby', { headers: auth(READ_KEY) });
+  assert.equal(missing.status, 400);
+  // injection-shaped `by` is rejected by the BY_RE whitelist
+  const evil = await req(app.port, 'GET', '/v1/groupby?by=data.$where', { headers: auth(READ_KEY) });
+  assert.equal(evil.status, 400);
+  assert.match(jsonOf(evil).error, /invalid by field/);
+});
+
+test('GET /v1/groupby groups by ids.userEmail scoped to level=error with otherCount', async (t) => {
+  const app = await makeApp(t, { collection: facetSeededCollection() });
+  const r = await req(
+    app.port,
+    'GET',
+    `/v1/groupby?by=ids.userEmail&level=error&${FACET_WINDOW}`,
+    { headers: auth(READ_KEY) },
+  );
+  assert.equal(r.status, 200);
+  const body = jsonOf(r);
+  assert.equal(body.by, 'ids.userEmail');
+  // only f2 is level=error in window; one user, count 1
+  assert.equal(body.total, 1);
+  assert.deepEqual(body.groups, [{ value: 'al@e.com', count: 1 }]);
+  assert.equal(body.otherCount, 0);
+});
+
+test('GET /v1/groupby by=app honors limit (otherCount accounts for the tail) and like filters values', async (t) => {
+  const app = await makeApp(t, { collection: facetSeededCollection() });
+  const h = { headers: auth(READ_KEY) };
+
+  // by=app over the window: appA has 3, appB has 1 (4 total). limit=1 shows the
+  // top group and rolls the rest into otherCount.
+  const limited = jsonOf(
+    await req(app.port, 'GET', `/v1/groupby?by=app&limit=1&${FACET_WINDOW}`, h),
+  );
+  assert.equal(limited.total, 3); // f1,f2 (appA) + f3 (appB) in window; fold excluded
+  assert.deepEqual(limited.groups, [{ value: 'appA', count: 2 }]);
+  assert.equal(limited.otherCount, 1); // appB's single doc
+
+  // like='appB' filters the grouped values to just appB (case-insensitive regex).
+  const liked = jsonOf(
+    await req(app.port, 'GET', `/v1/groupby?by=app&like=appb&${FACET_WINDOW}`, h),
+  );
+  assert.deepEqual(liked.groups, [{ value: 'appB', count: 1 }]);
+  assert.equal(liked.total, 1); // like applied before totals
+  assert.equal(liked.otherCount, 0);
+});
+
 test('GET /healthz sanitizes flusher.lastError to a category (no path/secret leak)', async (t) => {
   // A realistic raw flusher error leaking a WAL path + Mongo namespace + URI host.
   const leaky =

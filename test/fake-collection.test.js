@@ -1,6 +1,8 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createFakeCollection } from './helpers/fake-collection.js';
+import { buildFacetsPipeline } from '../src/query/facets.js';
+import { buildGroupByPipeline } from '../src/query/groupby.js';
 
 const T = (s) => new Date(s);
 
@@ -479,5 +481,222 @@ describe('index methods', () => {
       { key: { expiresAt: 1 }, expireAfterSeconds: 0 },
     ]);
     assert.equal(fc.docs.length, 4);
+  });
+});
+
+// --- Operators added in Task S3 to back /v1/facets (C-S1) and /v1/groupby (C-S2) ---
+// $project + $objectToArray + $map + $unwind + $facet + $count + $regex-on-_id.
+// These are exercised both as small focused cases and via the real exported
+// pipeline builders, so the fake engine matches the contract Mongo actually runs.
+
+describe('aggregate: $project with $objectToArray/$map/$ifNull (facets key extraction)', () => {
+  test('$objectToArray + $map projects the keys of a sub-object; $ifNull guards a missing field', async () => {
+    const fc = createFakeCollection();
+    await fc.insertMany([
+      { _id: 'a', ids: { requestId: 'r1', userEmail: 'x@e.com' }, data: { latencyMs: 5 } },
+      { _id: 'b' }, // no ids / no data at all
+    ]);
+    const keyMap = (field) => ({
+      $map: { input: { $objectToArray: { $ifNull: [field, {}] } }, as: 'k', in: '$$k.k' },
+    });
+    const rows = await fc
+      .aggregate([{ $project: { ik: keyMap('$ids'), dk: keyMap('$data') } }])
+      .toArray();
+    assert.equal(rows.length, 2);
+    // $project keeps _id by default plus exactly the projected fields.
+    assert.deepEqual(Object.keys(rows[0]).sort(), ['_id', 'dk', 'ik']);
+    assert.deepEqual(rows[0].ik.slice().sort(), ['requestId', 'userEmail']);
+    assert.deepEqual(rows[0].dk, ['latencyMs']);
+    // Missing field -> $ifNull yields {} -> $objectToArray [] -> $map [].
+    assert.deepEqual(rows[1].ik, []);
+    assert.deepEqual(rows[1].dk, []);
+  });
+
+  test('$project can drop _id with _id:0', async () => {
+    const fc = createFakeCollection();
+    await fc.insertMany([{ _id: 'a', app: 'web', env: 'prod' }]);
+    const rows = await fc.aggregate([{ $project: { _id: 0, app: 1 } }]).toArray();
+    assert.deepEqual(rows, [{ app: 'web' }]);
+  });
+});
+
+describe('aggregate: $unwind', () => {
+  test('$unwind emits one document per array element, carrying the rest of the doc', async () => {
+    const fc = createFakeCollection();
+    await fc.insertMany([{ _id: 'a', ik: ['x', 'y'] }, { _id: 'b', ik: ['x'] }]);
+    const rows = await fc.aggregate([{ $unwind: '$ik' }, { $sort: { ik: 1, _id: 1 } }]).toArray();
+    assert.deepEqual(
+      rows.map((r) => [r._id, r.ik]),
+      [['a', 'x'], ['b', 'x'], ['a', 'y']],
+    );
+  });
+
+  test('$unwind drops documents whose path is empty/missing (default, no preserveNullAndEmpty)', async () => {
+    const fc = createFakeCollection();
+    await fc.insertMany([{ _id: 'a', ik: ['x'] }, { _id: 'b', ik: [] }, { _id: 'c' }]);
+    const rows = await fc.aggregate([{ $unwind: '$ik' }]).toArray();
+    assert.deepEqual(rows.map((r) => r._id), ['a']);
+  });
+});
+
+describe('aggregate: $facet', () => {
+  test('runs each sub-pipeline over the same input and returns one document of arrays', async () => {
+    const fc = createFakeCollection();
+    await fc.insertMany([
+      { _id: 'a', level: 'info' },
+      { _id: 'b', level: 'error' },
+      { _id: 'c', level: 'error' },
+    ]);
+    const rows = await fc
+      .aggregate([
+        {
+          $facet: {
+            byLevel: [{ $group: { _id: '$level', count: { $sum: 1 } } }, { $sort: { _id: 1 } }],
+            total: [{ $count: 'n' }],
+          },
+        },
+      ])
+      .toArray();
+    assert.equal(rows.length, 1);
+    assert.deepEqual(rows[0].byLevel, [
+      { _id: 'error', count: 2 },
+      { _id: 'info', count: 1 },
+    ]);
+    assert.deepEqual(rows[0].total, [{ n: 3 }]);
+  });
+
+  test('$count yields no document for an empty sub-pipeline input (Mongo semantics)', async () => {
+    const fc = createFakeCollection();
+    await fc.insertMany([{ _id: 'a', app: 'web' }]);
+    const rows = await fc
+      .aggregate([{ $facet: { none: [{ $match: { app: 'ghost' } }, { $count: 'n' }] } }])
+      .toArray();
+    assert.deepEqual(rows[0].none, []);
+  });
+
+  test('$limit inside a $facet sub-pipeline caps the branch independently', async () => {
+    const fc = createFakeCollection();
+    await fc.insertMany([
+      { _id: 'a', v: 3 },
+      { _id: 'b', v: 1 },
+      { _id: 'c', v: 2 },
+    ]);
+    const rows = await fc
+      .aggregate([
+        {
+          $facet: {
+            top2: [{ $sort: { v: -1 } }, { $limit: 2 }],
+            grand: [{ $group: { _id: null, total: { $sum: '$v' } } }],
+          },
+        },
+      ])
+      .toArray();
+    assert.deepEqual(rows[0].top2.map((d) => d._id), ['a', 'c']);
+    assert.deepEqual(rows[0].grand, [{ _id: null, total: 6 }]);
+  });
+
+  test('$regex $match on the grouped _id filters distinct values (groupby `like`)', async () => {
+    const fc = createFakeCollection();
+    await fc.insertMany([
+      { _id: '1', u: 'alice' },
+      { _id: '2', u: 'alvin' },
+      { _id: '3', u: 'bob' },
+    ]);
+    const rows = await fc
+      .aggregate([
+        { $group: { _id: '$u', count: { $sum: 1 } } },
+        { $match: { _id: { $regex: 'al', $options: 'i' } } },
+        { $sort: { _id: 1 } },
+      ])
+      .toArray();
+    assert.deepEqual(rows.map((r) => r._id), ['alvin', 'alice'].sort());
+  });
+});
+
+describe('aggregate: exact C-S1 facets pipeline (buildFacetsPipeline)', () => {
+  async function facetsSeed() {
+    const fc = createFakeCollection();
+    await fc.insertMany([
+      {
+        _id: '1', app: 'web', receivedAt: T('2026-06-11T10:00:00.000Z'),
+        ids: { requestId: 'r1', userEmail: 'a@e.com' }, data: { latencyMs: 5, status: 200 },
+      },
+      {
+        _id: '2', app: 'web', receivedAt: T('2026-06-11T10:30:00.000Z'),
+        ids: { userEmail: 'b@e.com' }, data: { latencyMs: 9, model: 'opus' },
+      },
+      {
+        _id: '3', app: 'api', receivedAt: T('2026-06-11T10:45:00.000Z'),
+        data: { status: 500 },
+      },
+      // outside the window — must not contribute keys
+      { _id: 'old', app: 'web', receivedAt: T('2026-06-10T10:00:00.000Z'), ids: { sessionId: 's' } },
+    ]);
+    return fc;
+  }
+
+  test('discovers the union of ids.* keys and data.* paths in the window, both sorted', async () => {
+    const fc = await facetsSeed();
+    const from = T('2026-06-11T00:00:00.000Z');
+    const to = T('2026-06-12T00:00:00.000Z');
+    const rows = await fc.aggregate(buildFacetsPipeline({ from, to })).toArray();
+    assert.equal(rows.length, 1);
+    const ids = rows[0].ids.map((r) => r._id).sort();
+    const data = rows[0].data.map((r) => r._id).sort();
+    assert.deepEqual(ids, ['requestId', 'userEmail']); // sessionId excluded by window
+    assert.deepEqual(data, ['latencyMs', 'model', 'status']);
+  });
+
+  test('the app match narrows discovery to one app', async () => {
+    const fc = await facetsSeed();
+    const from = T('2026-06-11T00:00:00.000Z');
+    const to = T('2026-06-12T00:00:00.000Z');
+    const rows = await fc.aggregate(buildFacetsPipeline({ from, to, app: 'api' })).toArray();
+    assert.deepEqual(rows[0].ids.map((r) => r._id), []);
+    assert.deepEqual(rows[0].data.map((r) => r._id), ['status']);
+  });
+});
+
+describe('aggregate: exact C-S2 groupby pipeline (buildGroupByPipeline)', () => {
+  async function groupbySeed() {
+    const fc = createFakeCollection();
+    await fc.insertMany([
+      { _id: '1', level: 'error', ids: { userEmail: 'al@e.com' } },
+      { _id: '2', level: 'error', ids: { userEmail: 'al@e.com' } },
+      { _id: '3', level: 'error', ids: { userEmail: 'bo@e.com' } },
+      { _id: '4', level: 'error', ids: { userEmail: 'cy@e.com' } },
+      { _id: '5', level: 'info', ids: { userEmail: 'al@e.com' } }, // filtered out by level=error
+    ]);
+    return fc;
+  }
+
+  test('counts per grouped value desc, with totals branch for otherCount', async () => {
+    const fc = await groupbySeed();
+    const pipeline = buildGroupByPipeline({
+      by: 'ids.userEmail',
+      filter: { level: { $in: ['error'] } },
+      limit: 2,
+    });
+    const rows = await fc.aggregate(pipeline).toArray();
+    assert.equal(rows.length, 1);
+    const { groups, totals } = rows[0];
+    assert.deepEqual(
+      groups.map((g) => [g._id, g.count]),
+      [['al@e.com', 2], ['bo@e.com', 1]], // top 2 by count, ties by value asc
+    );
+    assert.deepEqual(totals, [{ _id: null, total: 4 }]); // 4 error docs across 3 users
+  });
+
+  test('the post-group `like` $match filters the grouped values', async () => {
+    const fc = await groupbySeed();
+    const pipeline = buildGroupByPipeline({
+      by: 'ids.userEmail',
+      filter: { level: { $in: ['error'] } },
+      limit: 10,
+      like: 'al',
+    });
+    const rows = await fc.aggregate(pipeline).toArray();
+    assert.deepEqual(rows[0].groups.map((g) => g._id), ['al@e.com']);
+    assert.deepEqual(rows[0].totals, [{ _id: null, total: 2 }]); // like applied before totals
   });
 });

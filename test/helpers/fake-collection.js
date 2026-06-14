@@ -161,46 +161,74 @@ function sumNumeric(values) {
   return total;
 }
 
-function evalExpr(expr, doc) {
+// `vars` carries $map's bound element (referenced as `$$<as>` / `$$<as>.field`);
+// empty for ordinary field expressions.
+function evalExpr(expr, doc, vars = {}) {
   if (expr === null || typeof expr === 'number' || typeof expr === 'boolean') return expr;
   if (typeof expr === 'string') {
     if (!expr.startsWith('$')) return expr;
+    // `$$var` / `$$var.path` resolves against the bound variables, not the doc.
+    if (expr.startsWith('$$')) {
+      const ref = expr.slice(2);
+      const [head, ...rest] = ref.split('.');
+      const base = vars[head];
+      const v = rest.length === 0 ? base : resolvePath(base, rest.join('.'));
+      return v === undefined ? null : v;
+    }
     const v = resolvePath(doc, expr.slice(1));
     return v === undefined ? null : v; // missing fields behave as null in expressions
   }
   if (expr instanceof Date) return expr;
-  if (Array.isArray(expr)) return expr.map((e) => evalExpr(e, doc));
+  if (Array.isArray(expr)) return expr.map((e) => evalExpr(e, doc, vars));
   const keys = Object.keys(expr);
   if (keys.length === 1 && keys[0].startsWith('$')) {
     const arg = expr[keys[0]];
     switch (keys[0]) {
       case '$cond': {
         const [cIf, cThen, cElse] = Array.isArray(arg) ? arg : [arg.if, arg.then, arg.else];
-        return isTruthy(evalExpr(cIf, doc)) ? evalExpr(cThen, doc) : evalExpr(cElse, doc);
+        return isTruthy(evalExpr(cIf, doc, vars)) ? evalExpr(cThen, doc, vars) : evalExpr(cElse, doc, vars);
       }
-      case '$eq': return valuesEqual(evalExpr(arg[0], doc), evalExpr(arg[1], doc));
-      case '$ne': return !valuesEqual(evalExpr(arg[0], doc), evalExpr(arg[1], doc));
+      case '$eq': return valuesEqual(evalExpr(arg[0], doc, vars), evalExpr(arg[1], doc, vars));
+      case '$ne': return !valuesEqual(evalExpr(arg[0], doc, vars), evalExpr(arg[1], doc, vars));
       // expression comparisons use full BSON order (null sorts below numbers),
       // so $gte:[null, 400] is false — what statusErrors in C9 relies on
-      case '$gte': return compareValues(evalExpr(arg[0], doc), evalExpr(arg[1], doc)) >= 0;
+      case '$gte': return compareValues(evalExpr(arg[0], doc, vars), evalExpr(arg[1], doc, vars)) >= 0;
       case '$ifNull': {
         for (let i = 0; i < arg.length - 1; i++) {
-          const v = evalExpr(arg[i], doc);
+          const v = evalExpr(arg[i], doc, vars);
           if (v !== null && v !== undefined) return v;
         }
-        return evalExpr(arg[arg.length - 1], doc);
+        return evalExpr(arg[arg.length - 1], doc, vars);
       }
       case '$convert': return convertToDouble(arg, doc);
       case '$dateTrunc': return dateTrunc(arg, doc);
       case '$sum': {
-        const v = evalExpr(arg, doc);
+        const v = evalExpr(arg, doc, vars);
         return Array.isArray(v) ? sumNumeric(v) : sumNumeric([v]);
+      }
+      // $objectToArray({a:1,b:2}) -> [{k:'a',v:1},{k:'b',v:2}]; powers the facets
+      // key-discovery pipeline (C-S1). A non-object input yields [] (the C-S1
+      // pipeline always feeds it a $ifNull-guarded object, so this never sees a
+      // scalar in practice, but [] is the safe, Mongo-ish degenerate).
+      case '$objectToArray': {
+        const v = evalExpr(arg, doc, vars);
+        if (v === null || typeof v !== 'object' || Array.isArray(v) || v instanceof Date) return [];
+        return Object.entries(v).map(([k, val]) => ({ k, v: val }));
+      }
+      // $map projects each element of an input array through `in`, binding the
+      // element to the `as` variable (referenced as `$$<as>...`). Used by C-S1 to
+      // turn [{k,v}] into just the keys.
+      case '$map': {
+        const input = evalExpr(arg.input, doc, vars);
+        if (!Array.isArray(input)) return null;
+        const varName = arg.as ?? 'this';
+        return input.map((el) => evalExpr(arg.in, doc, { ...vars, [varName]: el }));
       }
       default: throw new Error(`fake-collection: unsupported expression operator ${keys[0]}`);
     }
   }
   const out = {};
-  for (const [k, v] of Object.entries(expr)) out[k] = evalExpr(v, doc);
+  for (const [k, v] of Object.entries(expr)) out[k] = evalExpr(v, doc, vars);
   return out;
 }
 
@@ -260,6 +288,61 @@ function groupStage(docs, spec) {
   });
 }
 
+// $project: the subset the query modules use — `_id:0` to drop the id, and
+// `<field>: <expression>` to compute a new field (C-S1 maps ids/data to their
+// key lists). `_id` is retained unless explicitly set to 0/false. We only
+// support the inclusion+computed form the contracts emit (no path-exclusion of
+// arbitrary fields), and throw on anything outside it so drift is caught.
+function projectStage(docs, spec) {
+  const keepId = !('_id' in spec) || isTruthy(spec._id);
+  const computed = Object.entries(spec).filter(([k]) => k !== '_id');
+  return docs.map((doc) => {
+    const out = {};
+    if (keepId) out._id = doc._id;
+    for (const [field, expr] of computed) {
+      if (expr === 1 || expr === true) {
+        // inclusion: copy the field through if present
+        const v = resolvePath(doc, field);
+        if (v !== undefined) out[field] = v;
+      } else if (expr === 0 || expr === false) {
+        throw new Error('fake-collection: $project field-exclusion is unsupported');
+      } else {
+        out[field] = evalExpr(expr, doc);
+      }
+    }
+    return out;
+  });
+}
+
+// $unwind: emit one doc per element of the array at `path`. Matches the default
+// (no preserveNullAndEmptyArrays): missing / non-array / empty-array docs are
+// dropped, exactly like the C-S1 facets pipeline relies on.
+function unwindStage(docs, pathSpec) {
+  const path = (typeof pathSpec === 'string' ? pathSpec : pathSpec.path).slice(1); // strip leading $
+  const out = [];
+  for (const doc of docs) {
+    const arr = resolvePath(doc, path);
+    if (!Array.isArray(arr)) continue;
+    for (const el of arr) {
+      const copy = structuredClone(doc);
+      setPath(copy, path, el);
+      out.push(copy);
+    }
+  }
+  return out;
+}
+
+// Set a (possibly dotted) path on a plain object, creating intermediate objects.
+function setPath(obj, path, value) {
+  const parts = path.split('.');
+  let cur = obj;
+  for (let i = 0; i < parts.length - 1; i++) {
+    if (cur[parts[i]] === null || typeof cur[parts[i]] !== 'object') cur[parts[i]] = {};
+    cur = cur[parts[i]];
+  }
+  cur[parts[parts.length - 1]] = value;
+}
+
 function runPipeline(docs, pipeline) {
   let cur = docs;
   for (const stage of pipeline) {
@@ -268,6 +351,24 @@ function runPipeline(docs, pipeline) {
       case '$match': cur = cur.filter((d) => matchesFilter(d, stage.$match)); break;
       case '$group': cur = groupStage(cur, stage.$group); break;
       case '$sort': cur = sortDocs(cur, stage.$sort); break;
+      case '$project': cur = projectStage(cur, stage.$project); break;
+      case '$unwind': cur = unwindStage(cur, stage.$unwind); break;
+      case '$limit': cur = cur.slice(0, stage.$limit); break;
+      // $count collapses the stream to a single {<name>: n}; on an EMPTY input it
+      // emits NO document (Mongo semantics), which groupby/facets callers handle.
+      case '$count': cur = cur.length === 0 ? [] : [{ [stage.$count]: cur.length }]; break;
+      // $facet runs each named sub-pipeline over THIS stage's input independently
+      // and returns a single document whose fields are those branches' arrays
+      // (C-S1 ids/data discovery, C-S2 groups/totals). Each branch sees a fresh
+      // copy of the input so one branch's mutation can't leak into another.
+      case '$facet': {
+        const result = {};
+        for (const [name, sub] of Object.entries(stage.$facet)) {
+          result[name] = runPipeline(cur.map((d) => structuredClone(d)), sub);
+        }
+        cur = [result];
+        break;
+      }
       default: throw new Error(`fake-collection: unsupported pipeline stage ${op}`);
     }
   }
@@ -334,7 +435,10 @@ export function createFakeCollection() {
       return cursor;
     },
 
-    aggregate(pipeline) {
+    // Second arg mirrors the real driver's options (e.g. { maxTimeMS }); queries
+    // are in-memory and instant, so it is accepted and ignored — same no-op
+    // contract as the find() cursor's maxTimeMS().
+    aggregate(pipeline, _opts) {
       return {
         async toArray() {
           return runPipeline(store, pipeline).map((d) => structuredClone(d));

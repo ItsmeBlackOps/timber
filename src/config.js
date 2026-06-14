@@ -52,6 +52,14 @@ function mbEnvToBytes(env, name, defMb) {
   return Math.floor(readNumber(env, name, defMb) * MB);
 }
 
+// Contract C-S4: per-event `data` cap, configured in KB and stored as bytes.
+// Clamps the KB value into [loKb, hiKb] (same coerce-not-reject semantics as
+// clampedInt — 0/negative land on the floor, over-max on the ceiling) so a typo
+// can't crash startup, while non-numeric still throws (delegated to clampedInt).
+function clampedKbToBytes(env, name, defKb, loKb, hiKb) {
+  return clampedInt(env, name, defKb, loKb, hiKb) * 1024;
+}
+
 function warn(message) {
   process.stderr.write(`[timber] warning: ${message}\n`);
 }
@@ -122,7 +130,7 @@ export function loadConfig(env = process.env) {
     clusterWorkers: Math.floor(readNumber(env, 'TIMBER_CLUSTER', 0, { allowZero: true })),
     maxBodyBytes: 1_048_576,
     maxBatch: 500,
-    maxDataBytes: 16_384,
+    maxDataBytes: clampedKbToBytes(env, 'TIMBER_MAX_DATA_KB', 64, 1, 15360),
     maxMessageChars: 512,
     maxIdsKeys: 10,
   });

@@ -24,6 +24,8 @@ import { connectMongo, ensureIndexes } from './mongo.js';
 import { parseLogsQuery, runLogsQuery } from './query/logs.js';
 import { parseStatsQuery, runStats } from './query/stats.js';
 import { parseEventsQuery, runEvents } from './query/events.js';
+import { parseFacetsQuery, runFacets } from './query/facets.js';
+import { parseGroupByQuery, runGroupBy } from './query/groupby.js';
 
 // Read once at startup (C11). Buffer, so content-length is exact bytes.
 const UI_HTML = readFileSync(new URL('./ui/index.html', import.meta.url));
@@ -210,6 +212,22 @@ export function buildApp(config, deps) {
     const parsed = parseEventsQuery(url.searchParams);
     if (!parsed.ok) return sendError(res, 400, parsed.error);
     sendJson(res, 200, await runEvents(collection, parsed.value, { maxTimeMS: config.queryMaxTimeMs }));
+  });
+
+  router.add('GET', '/v1/facets', async (req, res, url) => {
+    const collection = readGate(req, res);
+    if (!collection) return;
+    const parsed = parseFacetsQuery(url.searchParams);
+    if (!parsed.ok) return sendError(res, 400, parsed.error);
+    sendJson(res, 200, await runFacets(collection, parsed.value, { maxTimeMS: config.queryMaxTimeMs }));
+  });
+
+  router.add('GET', '/v1/groupby', async (req, res, url) => {
+    const collection = readGate(req, res);
+    if (!collection) return;
+    const parsed = parseGroupByQuery(url.searchParams);
+    if (!parsed.ok) return sendError(res, 400, parsed.error);
+    sendJson(res, 200, await runGroupBy(collection, parsed.value, { maxTimeMS: config.queryMaxTimeMs }));
   });
 
   router.add('GET', '/', (req, res) => {
