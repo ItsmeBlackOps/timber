@@ -149,9 +149,13 @@ An item is the full stored doc, dates as ISO strings:
 | `ids.<key>` | exact correlation-id match | `ids.taskId=6a2877f0` |
 | `data.<path>` | exact match on any nested path; numeric/boolean-looking values match number **or** string | `data.status=200` |
 | `data.<path>__gte`, `__lte` | numeric range (combinable on one path) | `data.latencyMs__gte=30000` |
-| `q` | case-insensitive regex over `message`, ≤ 256 chars | `q=timeout` |
+| `q` | case-insensitive regex over `message`, ≤ 256 chars; nested-quantifier patterns rejected (ReDoS guard, see below) | `q=timeout` |
 | `limit` | 1..500, default 100 | `limit=500` |
 | `cursor` | opaque `nextCursor` from the previous page | |
+
+> **`q` regex safety (ReDoS policy).** `q` is a user-supplied regex evaluated server-side over `message`, and a read key is shared broadly (incl. AI assistants), so two defenses apply in depth:
+> 1. **Parse-time rejection** of catastrophic-backtracking patterns: a capture/non-capture group immediately followed by an unbounded quantifier whose body is itself unbounded — e.g. `(a+)+`, `(a*)*`, `(.*)+`, `(\d+){2,}`, `(?:a+)+`, `((a+)+)+` — is rejected with `400 {"error":"q rejected: nested quantifiers risk catastrophic backtracking"}`. This is a conservative heuristic: ordinary searches (`timeout`, `^GET `, `user.*not found`, `(read|write) key`, `status=4\d\d`) are unaffected.
+> 2. **Execution-time cap**: every read query (`/v1/logs`, `/v1/stats`, `/v1/events`) runs with MongoDB `maxTimeMS` = `TIMBER_QUERY_MAX_TIME_MS` (default `5000`, `0` disables). This bounds any backtracking that slips past the heuristic **and** plain unindexed collection scans, so no single read can pin a Mongo worker. `/v1/logs` has no mandatory time window, which makes the cap the load-bearing protection for full-scan queries.
 
 ```bash
 # AI calls slower than 30 s in the last 24 h
