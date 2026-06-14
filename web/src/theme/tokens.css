@@ -1,0 +1,30 @@
+/* Timber Console design tokens (light default + dark via [data-theme=dark]).
+   Task F4 owns/refines this; values are the approved palette. */
+:root {
+  --tb-bg: #F6F8FB;
+  --tb-surface: #FFFFFF;
+  --tb-2: #EEF1F6;
+  --tb-border: #E2E7EE;
+  --tb-text: #1A1E27;
+  --tb-mut: #5C6573;
+  --tb-acc: #4F46E5;
+  --tb-debug: #6B7280;
+  --tb-info: #2563EB;
+  --tb-warn: #B7791F;
+  --tb-error: #DC2626;
+}
+:root[data-theme="dark"] {
+  --tb-bg: #0B0C10;
+  --tb-surface: #131620;
+  --tb-2: #1A1F2C;
+  --tb-border: #262C3B;
+  --tb-text: #E7E9EE;
+  --tb-mut: #8B93A6;
+  --tb-acc: #838CF7;
+  --tb-debug: #7E889B;
+  --tb-info: #5B95F7;
+  --tb-warn: #E6A23C;
+  --tb-error: #F06A78;
+}
+html, body, #root { height: 100%; }
+body { margin: 0; background: var(--tb-bg); color: var(--tb-text); font-family: ui-sans-serif, system-ui, sans-serif; }
