@@ -5,6 +5,7 @@ import { AppSwitcher } from "@/components/AppSwitcher";
 import { HealthDot } from "@/components/HealthDot";
 import { SettingsDialog } from "@/components/SettingsDialog";
 import { ThemeToggle } from "@/components/ThemeToggle";
+import { useApplyTheme } from "@/hooks/useApplyTheme";
 import { useEvents } from "@/hooks/useEvents";
 import { useHealth } from "@/hooks/useHealth";
 import { loadSettings } from "@/lib/settings";
@@ -25,6 +26,9 @@ const navLinkBase: React.CSSProperties = {
 };
 
 export function RootShell() {
+  // Reactively apply the persisted theme to <html data-theme> (re-applies on a
+  // settings change in this or another tab, and on OS scheme change while "system").
+  useApplyTheme();
   const navigate = useNavigate();
   // App scope lives in the URL search (shared with Explore's filters). Read it
   // loosely (strict:false) so the shell works on every route.

@@ -5,7 +5,7 @@ import { useQuery } from '@tanstack/react-query'
 
 import { getFacets } from '@/lib/api'
 import type { FacetsResponse } from '@/lib/types'
-import { hasReadKey } from './_shared'
+import { useHasReadKey } from './_shared'
 import type { TimeRange } from './useStats'
 
 /** Query GET /v1/facets for the window (+ optional app). Disabled with no key. */
@@ -19,6 +19,6 @@ export function useFacets(app: string | undefined, range: TimeRange) {
       params.set('to', range.to)
       return getFacets(params)
     },
-    enabled: hasReadKey(),
+    enabled: useHasReadKey(),
   })
 }

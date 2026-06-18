@@ -27,7 +27,12 @@ import { StatsRoute } from '@/routes/stats'
 // this suite depends only on the C-F5 shape, not F3's localStorage impl, and so the
 // queries are enabled (non-empty read key).
 const settingsMock = vi.hoisted(() => ({ loadSettings: vi.fn() }))
-vi.mock('@/lib/settings', () => settingsMock)
+vi.mock('@/lib/settings', () => ({
+  loadSettings: settingsMock.loadSettings,
+  // Reactive store fns used by useSettings (the data-hook gate + userKey read).
+  getSnapshot: () => settingsMock.loadSettings(),
+  subscribe: () => () => {},
+}))
 
 const BASE_SETTINGS: Settings = {
   apiBaseUrl: '',

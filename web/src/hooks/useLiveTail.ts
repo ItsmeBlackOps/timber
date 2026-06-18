@@ -8,7 +8,7 @@ import { getLogs } from '@/lib/api'
 import { filtersToParams } from '@/lib/filters'
 import type { Filters } from '@/lib/filters'
 import type { LogDoc, LogsResponse } from '@/lib/types'
-import { hasReadKey, tailIntervalMs } from './_shared'
+import { useHasReadKey, useTailIntervalMs } from './_shared'
 
 function isVisible(): boolean {
   // jsdom + browsers both expose document.visibilityState.
@@ -22,14 +22,18 @@ function isVisible(): boolean {
  * stops without waiting for a re-render.
  */
 export function useLiveTail(filters: Filters, enabled: boolean) {
-  const active = enabled && hasReadKey() && isVisible()
+  // Reactive reads (hoisted, called unconditionally) so a saved key / changed
+  // interval takes effect immediately — in this tab or another.
+  const hasKey = useHasReadKey()
+  const tailMs = useTailIntervalMs()
+  const active = enabled && hasKey && isVisible()
 
   const query = useQuery<LogsResponse>({
     queryKey: ['liveTail', filtersToParams(filters).toString()],
     // Page 1 only — never sends a cursor.
     queryFn: () => getLogs(filtersToParams(filters)),
     enabled: active,
-    refetchInterval: () => (isVisible() ? tailIntervalMs() : false),
+    refetchInterval: () => (isVisible() ? tailMs : false),
     // Don't keep the tab from settling between polls.
     refetchOnWindowFocus: false,
   })

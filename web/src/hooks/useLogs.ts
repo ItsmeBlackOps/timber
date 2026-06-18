@@ -7,7 +7,7 @@ import { getLogs } from '@/lib/api'
 import { filtersToParams } from '@/lib/filters'
 import type { Filters } from '@/lib/filters'
 import type { LogDoc, LogsResponse } from '@/lib/types'
-import { hasReadKey } from './_shared'
+import { useHasReadKey } from './_shared'
 
 /**
  * Infinite query over GET /v1/logs.
@@ -29,7 +29,7 @@ export function useLogs(filters: Filters) {
       return getLogs(params)
     },
     getNextPageParam: (last) => last.nextCursor,
-    enabled: hasReadKey(),
+    enabled: useHasReadKey(),
   })
 
   const items: LogDoc[] = (query.data?.pages ?? []).flatMap((p) => p.items)

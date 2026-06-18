@@ -39,6 +39,9 @@ vi.mock('@/lib/settings', () => ({
   loadSettings: settingsMock.loadSettings,
   saveSettings: settingsMock.saveSettings,
   DEFAULTS: settingsMock.DEFAULTS,
+  // Reactive store fns used by useSettings (the data-hook enabled gate).
+  getSnapshot: () => settingsMock.loadSettings(),
+  subscribe: () => () => {},
 }))
 
 // jsdom shims the Explore subtree needs (matchMedia for theme, a fake

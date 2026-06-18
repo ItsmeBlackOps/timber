@@ -5,7 +5,7 @@ import { useQuery } from '@tanstack/react-query'
 
 import { getStats } from '@/lib/api'
 import type { StatsResponse } from '@/lib/types'
-import { hasReadKey } from './_shared'
+import { useHasReadKey } from './_shared'
 
 export interface TimeRange {
   from: string
@@ -30,6 +30,6 @@ export function useStats(
       if (event) params.set('event', event)
       return getStats(params)
     },
-    enabled: hasReadKey(),
+    enabled: useHasReadKey(),
   })
 }

@@ -15,7 +15,16 @@ import type { LogsResponse } from '@/lib/types'
 // The hooks read base URL + read key from settings (C-F5). Mock the module so
 // these suites don't depend on F3's localStorage impl — only the C-F5 shape.
 const settingsMock = vi.hoisted(() => ({ loadSettings: vi.fn() }))
-vi.mock('@/lib/settings', () => settingsMock)
+// The data hooks' enabled gate now reads settings reactively via
+// useSyncExternalStore (useSettings), so the mock must also expose subscribe +
+// getSnapshot. getSnapshot reads the mocked loadSettings, so each test's
+// mockReturnValue still controls the read-key gate; subscribe is a no-op (these
+// suites set the value before render, not mid-test).
+vi.mock('@/lib/settings', () => ({
+  loadSettings: settingsMock.loadSettings,
+  getSnapshot: () => settingsMock.loadSettings(),
+  subscribe: () => () => {},
+}))
 
 import {
   useLogs,

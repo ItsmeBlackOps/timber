@@ -41,6 +41,9 @@ vi.mock("@/lib/settings", () => ({
   loadSettings: settingsMock.loadSettings,
   saveSettings: settingsMock.saveSettings,
   DEFAULTS: settingsMock.DEFAULTS,
+  // Reactive store fns used by useSettings (the data-hook gate + viewCfg).
+  getSnapshot: () => settingsMock.loadSettings(),
+  subscribe: () => () => {},
 }));
 
 // ---- jsdom shims the children need ------------------------------------------

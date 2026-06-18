@@ -34,7 +34,7 @@ import {
   paramsToFilters,
 } from "@/lib/filters";
 import type { DataFilter, Filters, IdFilter } from "@/lib/filters";
-import { loadSettings } from "@/lib/settings";
+import { useSettings } from "@/hooks/useSettings";
 import {
   deleteView,
   loadSavedViews,
@@ -174,7 +174,7 @@ export function ExploreRoute() {
   const findRange = useMemo(() => last24h(), []);
 
   // View tunables for lenses (user identity keys + slow threshold).
-  const settings = loadSettings();
+  const settings = useSettings();
   const viewCfg: ViewCfg = useMemo(
     () => ({ userKeys: settings.userKeys, slowMs: settings.slowMs }),
     [settings.userKeys, settings.slowMs],

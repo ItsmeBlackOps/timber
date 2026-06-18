@@ -19,7 +19,7 @@ import { StatChart } from '@/components/StatChart'
 import type { StatChartKind } from '@/components/StatChart'
 import { useGroupBy, useStats } from '@/hooks'
 import type { Filters } from '@/lib/filters'
-import { loadSettings } from '@/lib/settings'
+import { useSettings } from '@/hooks/useSettings'
 import { PRESETS, presetRange } from '@/lib/time'
 import { ApiError } from '@/lib/types'
 
@@ -214,7 +214,7 @@ export function StatsRoute() {
 
   // The default identity key for "top users" comes from settings (C-F5), read
   // fresh so a SettingsDialog change re-scopes the breakdown.
-  const userKey = loadSettings().userKeys[0] ?? 'userEmail'
+  const userKey = useSettings().userKeys[0] ?? 'userEmail'
 
   function setGroup(next: Group) {
     void navigate({ to: '/stats', search: (prev) => ({ ...prev, group: next }), replace: true })

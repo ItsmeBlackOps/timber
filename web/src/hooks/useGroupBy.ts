@@ -8,7 +8,7 @@ import { getGroupBy } from '@/lib/api'
 import { filtersToParams } from '@/lib/filters'
 import type { Filters } from '@/lib/filters'
 import type { GroupByResponse } from '@/lib/types'
-import { hasReadKey } from './_shared'
+import { useHasReadKey } from './_shared'
 
 export interface UseGroupByOptions {
   /** Top-N values to return (server clamps 1..100, default 20). */
@@ -25,6 +25,8 @@ export interface UseGroupByOptions {
  */
 export function useGroupBy(by: string, filters: Filters, options: UseGroupByOptions = {}) {
   const { limit, like, enabled = true } = options
+  // Hoisted (not behind &&) so the hook is called unconditionally every render.
+  const hasKey = useHasReadKey()
 
   return useQuery<GroupByResponse>({
     queryKey: ['groupby', by, filtersToParams(filters).toString(), limit ?? null, like ?? null],
@@ -36,6 +38,6 @@ export function useGroupBy(by: string, filters: Filters, options: UseGroupByOpti
       if (like) params.set('like', like)
       return getGroupBy(params)
     },
-    enabled: enabled && hasReadKey(),
+    enabled: enabled && hasKey,
   })
 }

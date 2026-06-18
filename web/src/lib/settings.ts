@@ -115,3 +115,32 @@ export function saveSettings(s: Partial<Settings>): Settings {
   window.dispatchEvent(new CustomEvent(EVENT, { detail: next }));
   return next;
 }
+
+// --- Reactive store (for useSyncExternalStore) -----------------------------
+// Render-time settings reads (the data hooks' enabled gate, the Explore/Stats
+// routes, theme application) must update WITHOUT waiting for an unrelated
+// re-render. subscribe() notifies on both an in-tab save ('timber:settings'
+// CustomEvent) and a cross-tab write (the native 'storage' event); getSnapshot()
+// reuses loadSettings' raw-string cache so it returns a referentially-stable
+// value — required by useSyncExternalStore, which would otherwise loop forever.
+
+/** Register a listener for settings changes (this tab + other tabs). Returns an unsubscribe. */
+export function subscribe(callback: () => void): () => void {
+  if (typeof window === "undefined") return () => {};
+  const onSettings = () => callback();
+  const onStorage = (e: StorageEvent) => {
+    // key === null ⇒ storage was cleared; otherwise react only to our key.
+    if (e.key === null || e.key === STORAGE_KEY) callback();
+  };
+  window.addEventListener(EVENT, onSettings);
+  window.addEventListener("storage", onStorage);
+  return () => {
+    window.removeEventListener(EVENT, onSettings);
+    window.removeEventListener("storage", onStorage);
+  };
+}
+
+/** Referentially-stable current snapshot for useSyncExternalStore (reuses the loadSettings cache). */
+export function getSnapshot(): Settings {
+  return loadSettings();
+}
