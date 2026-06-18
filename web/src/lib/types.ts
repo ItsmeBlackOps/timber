@@ -63,6 +63,8 @@ export interface GroupByResponse {
   total: number
   groups: { value: string | number | boolean | null; count: number }[]
   otherCount: number
+  /** Resolved scan window (spec §5.2), echoed by the server like FacetsResponse. */
+  window: { from: string; to: string }
 }
 
 /** GET /healthz — service liveness + WAL/flusher/mongo subsystem state. */

@@ -402,6 +402,7 @@ describe('useGroupBy', () => {
           total: 3,
           groups: [{ value: 'a@b.co', count: 3 }],
           otherCount: 0,
+          window: { from: '2026-06-17T12:00:00.000Z', to: '2026-06-18T12:00:00.000Z' },
         })
       }),
     )
@@ -428,7 +429,7 @@ describe('useGroupBy', () => {
     server.use(
       http.get('/v1/groupby', () => {
         hit = true
-        return HttpResponse.json({ by: 'app', total: 0, groups: [], otherCount: 0 })
+        return HttpResponse.json({ by: 'app', total: 0, groups: [], otherCount: 0, window: { from: '2026-06-17T12:00:00.000Z', to: '2026-06-18T12:00:00.000Z' } })
       }),
     )
     const { Wrapper } = makeWrapper()
@@ -445,7 +446,7 @@ describe('useGroupBy', () => {
     server.use(
       http.get('/v1/groupby', () => {
         hit = true
-        return HttpResponse.json({ by: 'app', total: 0, groups: [], otherCount: 0 })
+        return HttpResponse.json({ by: 'app', total: 0, groups: [], otherCount: 0, window: { from: '2026-06-17T12:00:00.000Z', to: '2026-06-18T12:00:00.000Z' } })
       }),
     )
     const { Wrapper } = makeWrapper()

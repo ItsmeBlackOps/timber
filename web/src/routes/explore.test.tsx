@@ -220,6 +220,7 @@ beforeEach(() => {
         total: 0,
         groups: [],
         otherCount: 0,
+        window: { from: "2026-06-17T12:00:00.000Z", to: "2026-06-18T12:00:00.000Z" },
       }),
     ),
   );
@@ -335,6 +336,7 @@ describe("ExploreRoute", () => {
           total: 5,
           groups: [{ value: "carol@x.io", count: 5 }],
           otherCount: 0,
+          window: { from: "2026-06-17T12:00:00.000Z", to: "2026-06-18T12:00:00.000Z" },
         }),
       ),
     );

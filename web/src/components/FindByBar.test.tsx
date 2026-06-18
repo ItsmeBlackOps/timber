@@ -33,6 +33,7 @@ function groupby(values: string[]): { data: GroupByResponse } {
       total: values.length,
       groups: values.map((v, i) => ({ value: v, count: values.length - i })),
       otherCount: 0,
+      window: { from: "2026-06-17T12:00:00.000Z", to: "2026-06-18T12:00:00.000Z" },
     },
   };
 }

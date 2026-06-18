@@ -256,7 +256,7 @@ describe('typed endpoint helpers', () => {
   it('getGroupBy calls /v1/groupby', async () => {
     server.use(
       http.get('/v1/groupby', () =>
-        HttpResponse.json({ by: 'app', total: 5, groups: [{ value: 'api', count: 5 }], otherCount: 0 }),
+        HttpResponse.json({ by: 'app', total: 5, groups: [{ value: 'api', count: 5 }], otherCount: 0, window: { from: '2026-06-17T12:00:00.000Z', to: '2026-06-18T12:00:00.000Z' } }),
       ),
     )
 

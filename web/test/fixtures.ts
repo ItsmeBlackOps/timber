@@ -176,6 +176,7 @@ export const GROUPBY_RESPONSE: GroupByResponse = {
     { value: 'bob@example.com', count: 3 },
   ],
   otherCount: 2,
+  window: { from: '2026-06-17T12:00:00.000Z', to: '2026-06-18T12:00:00.000Z' },
 }
 
 /** Healthy service: WAL caught up, flusher running, Mongo connected. */

@@ -18,7 +18,16 @@ function resp(
   otherCount = 0,
 ): { data: GroupByResponse; isLoading: boolean } {
   const total = groups.reduce((s, g) => s + g.count, 0) + otherCount;
-  return { data: { by: "ids.userEmail", total, groups, otherCount }, isLoading: false };
+  return {
+    data: {
+      by: "ids.userEmail",
+      total,
+      groups,
+      otherCount,
+      window: { from: "2026-06-17T12:00:00.000Z", to: "2026-06-18T12:00:00.000Z" },
+    },
+    isLoading: false,
+  };
 }
 
 beforeEach(() => {

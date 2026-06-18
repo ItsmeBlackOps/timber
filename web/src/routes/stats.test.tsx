@@ -134,7 +134,7 @@ function mockGroupBy(): { bySeen: () => string[] } {
       }
       const groups = table[by] ?? []
       const total = groups.reduce((s, g) => s + g.count, 0)
-      return HttpResponse.json({ by, total, groups, otherCount: 0 })
+      return HttpResponse.json({ by, total, groups, otherCount: 0, window: { from: '2026-06-17T12:00:00.000Z', to: '2026-06-18T12:00:00.000Z' } })
     }),
   )
   return { bySeen: () => seen }
