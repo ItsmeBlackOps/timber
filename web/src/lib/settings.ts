@@ -21,6 +21,30 @@ export const DEFAULTS: Settings = {
 const STORAGE_KEY = "timber.settings";
 const EVENT = "timber:settings";
 
+/**
+ * SECURITY (read-key exfiltration / SSRF-to-wrong-origin): `apiBaseUrl` is
+ * operator-settable free text and gates an authenticated request that carries
+ * the high-value read key. A base URL is only "safe" when it keeps requests on
+ * the current origin, so the Bearer key can never be transmitted to a foreign
+ * host (whether apiBaseUrl was set via the Settings UI or, in future, populated
+ * from an untrusted source like a URL param, an imported view, or postMessage).
+ *
+ * Safe iff: empty (same-origin, the default), or a value that resolves —
+ * relative or absolute — to exactly `location.origin`. Anything that parses to a
+ * different origin, or that won't parse at all, is rejected. The split-origin
+ * deployment documented in the spec still works by fronting the API with a
+ * same-origin proxy (the server adds no CORS), which is the intended path.
+ */
+export function isSameOriginBaseUrl(apiBaseUrl: string): boolean {
+  const trimmed = apiBaseUrl.trim();
+  if (trimmed === "") return true; // default: relative paths → same origin
+  try {
+    return new URL(trimmed, location.origin).origin === location.origin;
+  } catch {
+    return false; // unparseable base URL → not safe
+  }
+}
+
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }

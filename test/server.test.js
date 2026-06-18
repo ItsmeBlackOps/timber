@@ -1015,3 +1015,53 @@ test('shutdown() works on a never-listened app', async () => {
   assert.equal(walWriter.closed, true);
   await rmTmpDir(walDir);
 });
+
+// --- security docs vs. code: maxTimeMS-cap coverage --------------------------
+
+// The "Execution-time cap" security note in USAGE.md enumerates the read
+// endpoints that run with MongoDB maxTimeMS = TIMBER_QUERY_MAX_TIME_MS — the
+// load-bearing DoS protection for unindexed/full-scan reads (incl. ReDoS that
+// slips past the q heuristic). A read endpoint that actually receives the cap in
+// src/server.js but is MISSING from that note is a stale security doc: an
+// operator auditing the protected surface would under-count it, and a high-DoS
+// endpoint like /v1/groupby (a full-collection group with no mandatory window)
+// could look unprotected. This invariant ties the prose to the code: every
+// endpoint wired with { maxTimeMS: config.queryMaxTimeMs } MUST be named in the
+// note, so adding a capped endpoint without documenting it (or dropping the cap)
+// fails here.
+test('USAGE.md execution-time-cap note lists every maxTimeMS-capped read endpoint', () => {
+  const serverSrc = readFileSync(new URL('../src/server.js', import.meta.url), 'utf8');
+  const usage = readFileSync(new URL('../USAGE.md', import.meta.url), 'utf8');
+
+  // Endpoints whose handler is wired with the server-side maxTimeMS cap. Match
+  // each `router.add('GET', '/v1/<name>', ...)` block that forwards
+  // { maxTimeMS: config.queryMaxTimeMs } to its query runner.
+  const cappedEndpoints = [];
+  const routeRe = /router\.add\(\s*['"]GET['"]\s*,\s*['"](\/v1\/[a-z]+)['"]([\s\S]*?)\n\s*\}\);/g;
+  for (let m; (m = routeRe.exec(serverSrc)); ) {
+    const [, path, body] = m;
+    if (/maxTimeMS:\s*config\.queryMaxTimeMs/.test(body)) cappedEndpoints.push(path);
+  }
+
+  // Guard the extraction itself: the committed surface is exactly these five
+  // read endpoints. If this fails, the regex drifted — fix it before trusting
+  // the doc assertion below (a zero/under-count here must never pass silently).
+  assert.deepEqual(
+    [...cappedEndpoints].sort(),
+    ['/v1/events', '/v1/facets', '/v1/groupby', '/v1/logs', '/v1/stats'],
+    'maxTimeMS-capped GET endpoints in src/server.js changed; update this test and USAGE.md',
+  );
+
+  // Isolate the "Execution-time cap" note so an endpoint mentioned elsewhere in
+  // the 470-line doc cannot accidentally satisfy the check.
+  const noteIdx = usage.indexOf('Execution-time cap');
+  assert.notEqual(noteIdx, -1, 'USAGE.md no longer contains the "Execution-time cap" security note');
+  const note = usage.slice(noteIdx, noteIdx + 1000);
+
+  const missing = cappedEndpoints.filter((p) => !note.includes(p));
+  assert.deepEqual(
+    missing,
+    [],
+    `USAGE.md execution-time-cap note omits maxTimeMS-capped endpoint(s): ${missing.join(', ')}`,
+  );
+});

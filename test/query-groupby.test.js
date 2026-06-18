@@ -7,11 +7,21 @@ import assert from 'node:assert/strict';
 import { parseGroupByQuery, buildGroupByPipeline, runGroupBy } from '../src/query/groupby.js';
 
 const sp = (qs) => new URLSearchParams(qs);
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 function assertFail(result, re) {
   assert.equal(result.ok, false);
   assert.equal(typeof result.error, 'string');
   if (re) assert.match(result.error, re);
+}
+
+// groupby now applies a mandatory default time window (like facets/stats) so an
+// unwindowed full-collection $group can never be the default. Most filter-surface
+// assertions don't care about the exact (now-relative) bounds, so split the
+// receivedAt clause off and assert the rest exactly.
+function splitWindow(filter) {
+  const { receivedAt, ...rest } = filter;
+  return { receivedAt, rest };
 }
 
 describe('parseGroupByQuery — by field (required, BY_RE)', () => {
@@ -91,10 +101,11 @@ describe('parseGroupByQuery — like', () => {
 });
 
 describe('parseGroupByQuery — reuses the logs filter surface (NO cursor)', () => {
-  test('app/env/level/event map exactly like logs', () => {
+  test('app/env/level/event map exactly like logs (alongside the default window)', () => {
     const r = parseGroupByQuery(sp('by=ids.userEmail&app=dash&env=prod&level=info,error&event=ai.'));
     assert.equal(r.ok, true, r.error);
-    assert.deepEqual(r.value.filter, {
+    const { rest } = splitWindow(r.value.filter);
+    assert.deepEqual(rest, {
       app: 'dash',
       env: 'prod',
       level: { $in: ['info', 'error'] },
@@ -102,7 +113,7 @@ describe('parseGroupByQuery — reuses the logs filter surface (NO cursor)', () 
     });
   });
 
-  test('from/to → receivedAt range', () => {
+  test('explicit from/to → exact receivedAt range (no default applied)', () => {
     const r = parseGroupByQuery(sp('by=app&from=2026-06-11T09:00:00.000Z&to=2026-06-11T10:00:00.000Z'));
     assert.deepEqual(r.value.filter, {
       receivedAt: {
@@ -112,27 +123,65 @@ describe('parseGroupByQuery — reuses the logs filter surface (NO cursor)', () 
     });
   });
 
+  test('an inverted window (from > to) is a 400, not a silent total:0', () => {
+    const r = parseGroupByQuery(sp('by=app&from=2026-06-18T00:00:00Z&to=2026-06-17T00:00:00Z'));
+    assertFail(r, /from/);
+  });
+
   test('ids.<key> and data.<path> (eq, numeric $in, range) reuse logs semantics', () => {
-    assert.deepEqual(parseGroupByQuery(sp('by=app&ids.requestId=r-42')).value.filter, {
+    assert.deepEqual(splitWindow(parseGroupByQuery(sp('by=app&ids.requestId=r-42')).value.filter).rest, {
       'ids.requestId': 'r-42',
     });
-    assert.deepEqual(parseGroupByQuery(sp('by=app&data.latencyMs=42')).value.filter, {
+    assert.deepEqual(splitWindow(parseGroupByQuery(sp('by=app&data.latencyMs=42')).value.filter).rest, {
       'data.latencyMs': { $in: [42, '42'] },
     });
-    assert.deepEqual(parseGroupByQuery(sp('by=app&data.latencyMs__gte=100&data.latencyMs__lte=500')).value.filter, {
+    assert.deepEqual(splitWindow(parseGroupByQuery(sp('by=app&data.latencyMs__gte=100&data.latencyMs__lte=500')).value.filter).rest, {
       'data.latencyMs': { $gte: 100, $lte: 500 },
     });
   });
 
   test('q maps to a message regex (and the ReDoS guard still applies)', () => {
-    assert.deepEqual(parseGroupByQuery(sp('by=app&q=slow query')).value.filter, {
+    assert.deepEqual(splitWindow(parseGroupByQuery(sp('by=app&q=slow query')).value.filter).rest, {
       message: { $regex: 'slow query', $options: 'i' },
     });
     assertFail(parseGroupByQuery(new URLSearchParams({ by: 'app', q: '(a+)+$' })), /q /);
   });
 
-  test('an empty filter is {} when only by is given', () => {
-    assert.deepEqual(parseGroupByQuery(sp('by=app')).value.filter, {});
+  // SECURITY (major DoS): groupby with only `by` and no from/to MUST NOT scan the
+  // entire retained collection. Like facets/stats, parseGroupByQuery defaults to a
+  // bounded 24h window so the unbounded sender-keyed $group runs over a bounded set.
+  test('defaults to a 24h window ending now when from/to are omitted (no unwindowed scan)', () => {
+    const before = Date.now();
+    const r = parseGroupByQuery(sp('by=ids.requestId'));
+    const after = Date.now();
+    assert.equal(r.ok, true, r.error);
+    const { receivedAt } = splitWindow(r.value.filter);
+    assert.ok(receivedAt, 'a default receivedAt window must be present');
+    assert.ok(receivedAt.$gte instanceof Date && receivedAt.$lt instanceof Date);
+    assert.ok(receivedAt.$lt.getTime() >= before && receivedAt.$lt.getTime() <= after, 'to defaults to now');
+    assert.equal(receivedAt.$lt.getTime() - receivedAt.$gte.getTime(), DAY_MS, 'window spans 24h');
+    // resolved window is also surfaced on value for the response echo
+    assert.ok(r.value.from instanceof Date && r.value.to instanceof Date);
+    assert.equal(r.value.from.getTime(), receivedAt.$gte.getTime());
+    assert.equal(r.value.to.getTime(), receivedAt.$lt.getTime());
+  });
+
+  test('defaults from to to-24h when only to is given', () => {
+    const r = parseGroupByQuery(sp('by=ids.requestId&to=2026-06-11T00:00:00.000Z'));
+    assert.equal(r.ok, true, r.error);
+    assert.deepEqual(r.value.filter.receivedAt, {
+      $gte: new Date('2026-06-10T00:00:00.000Z'),
+      $lt: new Date('2026-06-11T00:00:00.000Z'),
+    });
+  });
+
+  test('an explicit `from` alone keeps `to` defaulting to now (window stays bounded below)', () => {
+    const before = Date.now();
+    const r = parseGroupByQuery(sp('by=app&from=2026-06-01T00:00:00.000Z'));
+    const after = Date.now();
+    assert.equal(r.ok, true, r.error);
+    assert.equal(r.value.filter.receivedAt.$gte.getTime(), new Date('2026-06-01T00:00:00.000Z').getTime());
+    assert.ok(r.value.filter.receivedAt.$lt.getTime() >= before && r.value.filter.receivedAt.$lt.getTime() <= after);
   });
 
   test('a cursor param does not produce a keyset $or (NO cursor)', () => {
@@ -215,6 +264,18 @@ describe('runGroupBy — post-processing of $facet output', () => {
       ],
       otherCount: 5, // 15 - (7 + 3)
     });
+  });
+
+  // Spec §5.2: the response echoes the resolved scan window so a client can see
+  // (and reproduce) the bounded range a defaulted query actually ran over.
+  test('echoes the resolved window as ISO strings when from/to are on the value', async () => {
+    const col = stub({ groups: [{ _id: 'web', count: 2 }], totals: [{ _id: null, total: 2 }] });
+    const from = new Date('2026-06-10T00:00:00.000Z');
+    const to = new Date('2026-06-11T00:00:00.000Z');
+    const out = await runGroupBy(col, { by: 'app', filter: { receivedAt: { $gte: from, $lt: to } }, limit: 20, from, to });
+    assert.deepEqual(out.window, { from: '2026-06-10T00:00:00.000Z', to: '2026-06-11T00:00:00.000Z' });
+    assert.equal(out.by, 'app');
+    assert.equal(out.total, 2);
   });
 
   test('otherCount is 0 when the returned groups already sum to the total', async () => {

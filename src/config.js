@@ -124,7 +124,10 @@ export function loadConfig(env = process.env) {
     flushIntervalMs: positiveInt(env, 'TIMBER_FLUSH_INTERVAL_MS', 200),
     // Server-side cap on read-query execution (maxTimeMS). Bounds catastrophic
     // $regex backtracking and unindexed COLLSCANs so a single read request can't
-    // pin a Mongo worker indefinitely. 0 disables the cap.
+    // pin a Mongo worker indefinitely. 0 disables the cap — KEEP THIS > 0 IN
+    // PRODUCTION: it is the universal backstop for the ReDoS classes the `q`
+    // parse-time guard (src/query/logs.js) deliberately does not classify, and
+    // for plain unindexed COLLSCANs. The 5000ms default below is safe.
     queryMaxTimeMs: clampedInt(env, 'TIMBER_QUERY_MAX_TIME_MS', 5000, 0, 600000),
     // HTTP socket hardening (applied to the node:http server in buildApp). Node's
     // defaults are dangerously slack for an ingest endpoint that reserves a
@@ -142,6 +145,10 @@ export function loadConfig(env = process.env) {
     maxBodyBytes: 1_048_576,
     maxBatch: 500,
     maxDataBytes: clampedKbToBytes(env, 'TIMBER_MAX_DATA_KB', 64, 1, 15360),
+    // Bounds nesting depth of data/ids; checked (non-recursively) before the
+    // size measurement, which uses a recursive JSON.stringify that a deep payload
+    // could otherwise overflow. IDs-not-payloads (§5.4) means real data is shallow.
+    maxDataDepth: 32,
     maxMessageChars: 512,
     maxIdsKeys: 10,
   });

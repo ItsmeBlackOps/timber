@@ -1,6 +1,11 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { X } from "lucide-react";
-import { DEFAULTS, loadSettings, saveSettings } from "@/lib/settings";
+import {
+  DEFAULTS,
+  loadSettings,
+  saveSettings,
+  isSameOriginBaseUrl,
+} from "@/lib/settings";
 import type { Settings } from "@/lib/settings";
 import { applyTheme } from "@/lib/theme";
 
@@ -82,6 +87,9 @@ export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
   );
   const [userKeys, setUserKeys] = useState(keysToText(DEFAULTS.userKeys));
   const [slowMs, setSlowMs] = useState(String(DEFAULTS.slowMs));
+  // SECURITY: validation message for a cross-origin API base URL (would carry
+  // the read key off-origin). Empty string = no error.
+  const [baseUrlError, setBaseUrlError] = useState("");
 
   // Re-seed from persisted settings whenever the dialog transitions to open.
   useEffect(() => {
@@ -93,6 +101,7 @@ export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
     setTailIntervalMs(String(s.tailIntervalMs));
     setUserKeys(keysToText(s.userKeys));
     setSlowMs(String(s.slowMs));
+    setBaseUrlError("");
   }, [open]);
 
   // Focus management for the modal (WCAG 2.4.3): on open, remember what had
@@ -142,14 +151,25 @@ export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
   }
 
   function save() {
+    const trimmedBase = apiBaseUrl.trim();
+    // SECURITY: refuse a cross-origin base URL — persisting it would let apiGet
+    // send the read key to a foreign host. Keep the dialog open and surface the
+    // error instead of silently saving an exfiltration vector.
+    if (!isSameOriginBaseUrl(trimmedBase)) {
+      setBaseUrlError(
+        "API base URL must be empty or the same origin as this console.",
+      );
+      return;
+    }
     const next: Partial<Settings> = {
       readKey: readKey.trim(),
-      apiBaseUrl: apiBaseUrl.trim(),
+      apiBaseUrl: trimmedBase,
       theme,
       tailIntervalMs: toNumber(tailIntervalMs, DEFAULTS.tailIntervalMs),
       userKeys: textToKeys(userKeys),
       slowMs: toNumber(slowMs, DEFAULTS.slowMs),
     };
+    setBaseUrlError("");
     saveSettings(next);
     applyTheme(theme);
     onClose();
@@ -247,10 +267,32 @@ export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
               id={`${ids}-base`}
               type="text"
               value={apiBaseUrl}
-              onChange={(e) => setApiBaseUrl(e.target.value)}
+              onChange={(e) => {
+                setApiBaseUrl(e.target.value);
+                if (baseUrlError) setBaseUrlError("");
+              }}
               placeholder="(same origin)"
-              style={fieldStyle}
+              aria-invalid={baseUrlError ? true : undefined}
+              aria-describedby={baseUrlError ? `${ids}-base-err` : undefined}
+              style={
+                baseUrlError
+                  ? { ...fieldStyle, borderColor: "var(--tb-error)" }
+                  : fieldStyle
+              }
             />
+            {baseUrlError ? (
+              <p
+                id={`${ids}-base-err`}
+                role="alert"
+                style={{
+                  margin: "4px 0 0",
+                  fontSize: 11,
+                  color: "var(--tb-error)",
+                }}
+              >
+                {baseUrlError}
+              </p>
+            ) : null}
           </div>
 
           <div>

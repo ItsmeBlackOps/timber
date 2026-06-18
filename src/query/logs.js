@@ -13,29 +13,68 @@ const escapeRegex = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 // ReDoS guard for the `q` regex (defense-in-depth alongside the maxTimeMS cap in
 // runLogsQuery). `q` is forwarded to Mongo as a $regex over an unindexed,
 // optionally window-less COLLSCAN and a read key — handed to AI assistants per
-// PRD §6.2 — is enough to send it. `new RegExp(q)` only checks *syntax*, so a
-// nested quantifier like `(a+)+$` sails through and triggers catastrophic
-// PCRE2 backtracking on the server.
+// PRD §6.2 — is enough to send it. `new RegExp(q)` only checks *syntax*, so an
+// evil pattern like `(a+)+$` sails through and triggers catastrophic
+// backtracking on a V8/PCRE-classic engine.
 //
-// We reject the cheap, high-signal class: a group close `)` immediately
-// followed by an "unbounded" quantifier (`+`, `*`, or any `{...}` range) when
-// that group's body itself contains an unbounded quantifier — i.e. nested
-// quantifiers `(a+)+`, `(a*)*`, `(.*)+`, `(\d+){2,}`, `(?:a+)+`, `(a|a)+`.
-// Ordinary substring/anchored searches (`^GET `, `slow query`, `user.*x`,
-// `(read|write) key`, single quantifiers) carry no nested quantifier and pass.
-// This is a conservative filter, not a complete classifier; the maxTimeMS cap
-// is the backstop for anything it misses (e.g. flat `a?a?...aaaa` chains).
+// IMPORTANT — scope of this control. Mongo's PCRE2 engine (JIT + a built-in
+// match/backtracking limit) does NOT exhibit V8-style exponential blowup on
+// these patterns, and the runLogsQuery maxTimeMS cap bounds COLLSCAN time
+// regardless; so the *server-side* ReDoS risk today is latent. This guard is
+// defense-in-depth: it keeps a stated security control honest and protects any
+// V8/PCRE-classic consumer of `q` (a future client-side preview, or Mongo run
+// with maxTimeMS=0 on an engine without the PCRE2 limit). It is a conservative
+// heuristic, NOT a complete classifier; maxTimeMS remains the universal backstop
+// for the residual classes below (e.g. flat `a?a?...aaaa` optional chains).
+//
+// Three exponential families are rejected — verified against V8 RegExp where
+// each blows up super-linearly while every benign C8 search stays flat:
+//   1. Nested quantifiers: a group `)` immediately followed by an unbounded
+//      quantifier (`+`, `*`, or a `{m,}` / `{m,n}` range) when the group body
+//      itself contains an unbounded quantifier — `(a+)+`, `(a*)*`, `(.*)+`,
+//      `(\d+){2,}`, `(?:a+)+`, and deeper nesting like `((a+)+)+`.
+//   2. Quantified alternation with overlapping branches: a group closed by an
+//      unbounded quantifier whose body has a top-level `|` where one branch is
+//      a prefix of another (incl. identical branches) — `(a|a)+`, `(a|aa)+`,
+//      `(a|ab)*`, `(a|a){2,}`. Overlap makes each input char ambiguous across
+//      branches, the source of the blowup. NON-overlapping alternations such as
+//      `(read|write) key` or `(read|write)+` are linear and pass.
+//   3. Adjacent unbounded quantifiers over the SAME atom: `a+a+...`, `a*a*...`,
+//      `\d+\d+`. The repeated overlapping atoms backtrack exponentially. A
+//      single quantifier (`a+`, `user.*x`, `\d+ ms`) or quantifiers separated
+//      by a mandatory atom (`[0-9]+\.[0-9]{2}`) are safe and pass.
+//
+// Ordinary substring/anchored searches (`^GET `, `slow query`, `(read|write)
+// key`) carry none of these and pass.
 function hasCatastrophicBacktracking(pattern) {
-  // Per-group flag: did the body at THIS paren depth contain an unbounded
-  // quantifier (+, *, or a {m,} / {m,n} range)? Index 0 is the top level.
-  const groupHasUnbounded = [false];
+  // Per-paren-depth state stacks. Index 0 is the top level; ( pushes, ) pops.
+  const groupHasUnbounded = [false]; // body at THIS depth has a +/*/{m,} quantifier
+  const groupBranches = [['']]; // top-level alternation branches accumulated as
+  //   atom-source strings, for the family-2 prefix-overlap check
+  const prevAtom = [null]; // source text of the previous atom at this depth …
+  const prevAtomUnbounded = [false]; //   … and whether it was unbounded-quantified
   let inClass = false; // inside a [...] character class: metacharacters are literal
+
+  const isUnbounded = (c) => c === '+' || c === '*';
+  const top = () => groupHasUnbounded.length - 1;
+  // Record a single "atom" (literal char, escape, or [class]) and return true if
+  // it forms an adjacent overlapping-quantifier run with the previous atom (f.3).
+  const noteAtom = (atom, nextChar) => {
+    const unbounded = isUnbounded(nextChar);
+    const adjacentRun = prevAtomUnbounded[top()] && prevAtom[top()] === atom && unbounded;
+    prevAtom[top()] = atom;
+    prevAtomUnbounded[top()] = unbounded;
+    groupBranches[top()][groupBranches[top()].length - 1] += atom;
+    return adjacentRun;
+  };
 
   for (let i = 0; i < pattern.length; i++) {
     const ch = pattern[i];
 
     if (ch === '\\') {
-      i++; // skip the escaped character — it is always a literal
+      // An escape (`\d`, `\.`, …) is a single literal atom of two chars.
+      if (noteAtom(pattern.slice(i, i + 2), pattern[i + 2])) return true;
+      i++; // skip the escaped character
       continue;
     }
     if (inClass) {
@@ -43,26 +82,70 @@ function hasCatastrophicBacktracking(pattern) {
       continue;
     }
     if (ch === '[') {
-      inClass = true;
+      // Consume the whole character class as one atom so `[0-9]+[0-9]+` is seen
+      // as an adjacent run while `[0-9]+\.[0-9]{2}` is not.
+      let j = i + 1;
+      while (j < pattern.length && pattern[j] !== ']') {
+        if (pattern[j] === '\\') j++;
+        j++;
+      }
+      if (noteAtom(pattern.slice(i, j + 1), pattern[j + 1])) return true;
+      i = j;
       continue;
     }
     if (ch === '(') {
       groupHasUnbounded.push(false);
+      groupBranches.push(['']);
+      prevAtom.push(null);
+      prevAtomUnbounded.push(false);
+      continue;
+    }
+    if (ch === '|') {
+      // Start a new top-level branch for THIS group; reset adjacency tracking.
+      groupBranches[top()].push('');
+      prevAtom[top()] = null;
+      prevAtomUnbounded[top()] = false;
       continue;
     }
     if (ch === ')') {
       const innerUnbounded = groupHasUnbounded.pop() ?? false;
-      if (groupHasUnbounded.length === 0) groupHasUnbounded.push(false); // unbalanced ) — keep scanning safely
+      const branches = groupBranches.pop() ?? [''];
+      prevAtom.pop();
+      prevAtomUnbounded.pop();
+      if (groupHasUnbounded.length === 0) {
+        // unbalanced ) — re-seed the top level and keep scanning safely
+        groupHasUnbounded.push(false);
+        groupBranches.push(['']);
+        prevAtom.push(null);
+        prevAtomUnbounded.push(false);
+      }
       const next = pattern[i + 1];
       const outerUnbounded = next === '+' || next === '*' || next === '{';
-      if (innerUnbounded && outerUnbounded) return true; // nested quantifier
+      if (innerUnbounded && outerUnbounded) return true; // family 1: nested quantifier
+      if (outerUnbounded && branches.length > 1) {
+        // family 2: quantified alternation whose branches prefix-overlap. Strip a
+        // leading group-type marker ((?: (?= (?! (?<= (?<!) from the first branch.
+        const norm = branches.map((b) => b.replace(/^\?(?:[:=!]|<[=!])/, ''));
+        for (let a = 0; a < norm.length; a++) {
+          for (let b = a + 1; b < norm.length; b++) {
+            const x = norm[a];
+            const y = norm[b];
+            if (x.length > 0 && y.length > 0 && (x.startsWith(y) || y.startsWith(x))) {
+              return true;
+            }
+          }
+        }
+      }
       // A quantifier applied to this group counts toward the ENCLOSING group's
-      // "unbounded" flag, so deeper nesting like ((a+)+)+ is also caught.
-      if (outerUnbounded) groupHasUnbounded[groupHasUnbounded.length - 1] = true;
+      // "unbounded" flag, so deeper nesting like ((a+)+)+ is also caught. The
+      // group is opaque as an "atom" for adjacency, so reset prev tracking.
+      if (outerUnbounded) groupHasUnbounded[top()] = true;
+      prevAtom[top()] = null;
+      prevAtomUnbounded[top()] = outerUnbounded;
       continue;
     }
     if (ch === '+' || ch === '*') {
-      groupHasUnbounded[groupHasUnbounded.length - 1] = true;
+      groupHasUnbounded[top()] = true;
       continue;
     }
     if (ch === '{') {
@@ -72,12 +155,14 @@ function hasCatastrophicBacktracking(pattern) {
       if (close !== -1) {
         const body = pattern.slice(i + 1, close);
         if (/^\d*,\d*$/.test(body)) {
-          groupHasUnbounded[groupHasUnbounded.length - 1] = true;
+          groupHasUnbounded[top()] = true;
         }
         i = close;
       }
       continue;
     }
+    // ordinary literal character = a single-char atom
+    if (noteAtom(ch, pattern[i + 1])) return true;
   }
   return false;
 }
@@ -146,7 +231,7 @@ export function buildLogsFilter(searchParams) {
         return fail('q is not a valid regular expression');
       }
       if (hasCatastrophicBacktracking(value)) {
-        return fail('q rejected: nested quantifiers risk catastrophic backtracking');
+        return fail('q rejected: pattern risks catastrophic backtracking (nested/overlapping/adjacent quantifiers)');
       }
       filter.message = { $regex: value, $options: 'i' };
     } else if (name === 'cursor') {
@@ -175,6 +260,19 @@ export function buildLogsFilter(searchParams) {
   }
 
   if (receivedAtRange.$gte !== undefined || receivedAtRange.$lt !== undefined) {
+    // Reject an inverted/empty window (from >= to) with a 400 instead of silently
+    // mapping it to an impossible {$gte: later, $lt: earlier} that matches zero
+    // docs and returns a 200. A transposed from/to is a typo, and the rest of the
+    // query surface already 400s typos (unknown param, bad level, etc.); since
+    // from→$gte and to→$lt can never overlap when from === to either, the
+    // boundary is `>=`. Only checked when BOTH bounds are present.
+    if (
+      receivedAtRange.$gte !== undefined &&
+      receivedAtRange.$lt !== undefined &&
+      receivedAtRange.$gte.getTime() >= receivedAtRange.$lt.getTime()
+    ) {
+      return fail('from must be earlier than to (got an inverted or empty time window)');
+    }
     filter.receivedAt = receivedAtRange;
   }
 

@@ -184,6 +184,83 @@ test('data at or under maxDataBytes passes through untouched', () => {
   assert.deepEqual(res.value.data, data);
 });
 
+// --- deep-nesting guard (security): JSON.stringify is recursive in V8, so a
+// deeply-nested but tiny `data` overflowed the call stack BEFORE the size check,
+// turning an in-spec request into a 500 and defeating the size cap. The depth
+// walk must be non-recursive and reject over-depth input with a clean error.
+
+// Helpers build values via parsing so the nesting is genuine JS structure, and
+// so the test cannot itself overflow building deep literals.
+function deepObjectData(depth) {
+  let s = '1';
+  for (let i = 0; i < depth; i++) s = `{"a":${s}}`;
+  return JSON.parse(`{"a":${s}}`); // top level is a plain object
+}
+function deepArrayData(depth) {
+  let s = '1';
+  for (let i = 0; i < depth; i++) s = `[${s}]`;
+  return JSON.parse(`{"a":${s}}`); // top level is a plain object, nested arrays inside
+}
+
+test('deeply-nested object data is rejected with a clean error, not a thrown RangeError', () => {
+  // depth 2000 = ~12KB body, comfortably under the 64KB data cap, yet it used to
+  // overflow JSON.stringify and surface as a 500.
+  let res;
+  assert.doesNotThrow(() => {
+    res = validateEnvelope({ event: 'x', data: deepObjectData(2000) }, limits);
+  }, 'validateEnvelope must not throw on deeply-nested data');
+  assert.equal(res.ok, false);
+  assert.match(res.error, /data/);
+});
+
+test('deeply-nested array inside data is rejected with a clean error, not a thrown RangeError', () => {
+  // nested-array shape triggers the overflow at only ~6KB.
+  let res;
+  assert.doesNotThrow(() => {
+    res = validateEnvelope({ event: 'x', data: deepArrayData(3000) }, limits);
+  }, 'validateEnvelope must not throw on deeply-nested array data');
+  assert.equal(res.ok, false);
+  assert.match(res.error, /data/);
+});
+
+test('data nested at exactly the depth cap is accepted; one deeper is rejected', () => {
+  // Contract: depth cap is 32 (matches IDs-not-payloads intent, PRD §5.4).
+  // Build {"a":{"a":...:42}}; the cap counts nesting levels under `data`.
+  const atCap = JSON.parse(`{"event":"x","data":${'{"a":'.repeat(32)}42${'}'.repeat(32)}}`);
+  assert.equal(validateEnvelope(atCap, limits).ok, true, 'depth == cap must pass');
+
+  const overCap = JSON.parse(`{"event":"x","data":${'{"a":'.repeat(33)}42${'}'.repeat(33)}}`);
+  const res = validateEnvelope(overCap, limits);
+  assert.equal(res.ok, false, 'depth == cap + 1 must fail');
+  assert.match(res.error, /data/);
+});
+
+test('deeply-nested ids is rejected with a clean error, not a thrown RangeError', () => {
+  // ids values are scalars, but guard the structure defensively so a hostile
+  // shape can never reach a recursive serializer.
+  const ids = { a: 1 };
+  // Force a nested object value past the depth cap; validateEnvelope rejects
+  // non-scalar ids values, so this must surface as a clean /ids/ error (not a throw).
+  ids.deep = deepObjectData(2000);
+  let res;
+  assert.doesNotThrow(() => {
+    res = validateEnvelope({ event: 'x', ids }, limits);
+  }, 'validateEnvelope must not throw on deeply-nested ids');
+  assert.equal(res.ok, false);
+  assert.match(res.error, /ids/);
+});
+
+test('a deep-nest bomb in one batch event does not throw and is reported as a clean 400', () => {
+  const batch = [{ event: 'ok' }, { event: 'bomb', data: deepArrayData(3000) }];
+  let res;
+  assert.doesNotThrow(() => {
+    res = validateBatch(batch, limits);
+  }, 'validateBatch must not throw on a deep-nest bomb');
+  assert.equal(res.ok, false);
+  assert.equal(res.status, 400);
+  assert.equal(res.index, 1);
+});
+
 // --- validateBatch ---
 
 test('single object body wraps into a batch of one', () => {

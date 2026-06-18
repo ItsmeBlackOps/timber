@@ -1,5 +1,10 @@
 import type { Settings } from "@/lib/settings";
-import { DEFAULTS, loadSettings, saveSettings } from "@/lib/settings";
+import {
+  DEFAULTS,
+  loadSettings,
+  saveSettings,
+  isSameOriginBaseUrl,
+} from "@/lib/settings";
 
 const KEY = "timber.settings";
 
@@ -146,5 +151,54 @@ describe("loadSettings caching / identity", () => {
     const cleared = loadSettings();
     expect(cleared).not.toBe(stored);
     expect(cleared).toEqual(DEFAULTS);
+  });
+});
+
+// SECURITY: apiBaseUrl gates an authenticated request carrying the read key.
+// isSameOriginBaseUrl is the single source of truth for "may the key ride this
+// base URL?" — used at save time (SettingsDialog) and conceptually mirrored at
+// request time (api.ts). location.origin is http://localhost:3000 in jsdom.
+describe("isSameOriginBaseUrl", () => {
+  it("accepts the empty default (relative paths → same origin)", () => {
+    expect(isSameOriginBaseUrl("")).toBe(true);
+    expect(isSameOriginBaseUrl("   ")).toBe(true);
+  });
+
+  it("accepts an absolute URL on the current origin", () => {
+    expect(isSameOriginBaseUrl("http://localhost:3000")).toBe(true);
+    expect(isSameOriginBaseUrl("http://localhost:3000/")).toBe(true);
+    expect(isSameOriginBaseUrl("http://localhost:3000/api")).toBe(true);
+  });
+
+  it("accepts a relative/path-only base URL (resolves to same origin)", () => {
+    expect(isSameOriginBaseUrl("/api")).toBe(true);
+    expect(isSameOriginBaseUrl("/v1")).toBe(true);
+  });
+
+  it("rejects a cross-origin host (the exfiltration vector)", () => {
+    expect(isSameOriginBaseUrl("https://attacker.evil.example")).toBe(false);
+    expect(isSameOriginBaseUrl("http://attacker.evil.example")).toBe(false);
+    expect(isSameOriginBaseUrl("https://logs.example.com")).toBe(false);
+  });
+
+  it("rejects a different port / scheme on the same host", () => {
+    expect(isSameOriginBaseUrl("http://localhost:7710")).toBe(false);
+    expect(isSameOriginBaseUrl("https://localhost:3000")).toBe(false);
+  });
+
+  it("rejects a protocol-relative URL pointing off-origin", () => {
+    expect(isSameOriginBaseUrl("//attacker.evil.example")).toBe(false);
+  });
+
+  it("fails closed on an unparseable absolute value", () => {
+    // No host after the scheme → WHATWG URL throws → reject.
+    expect(isSameOriginBaseUrl("http://")).toBe(false);
+  });
+
+  it("treats a schemeless token as a same-origin relative path (safe)", () => {
+    // No valid scheme → parsed as a path relative to location.origin, so the
+    // request can only stay on our origin and the key is safe to attach.
+    expect(isSameOriginBaseUrl("ht!tp:nope")).toBe(true);
+    expect(isSameOriginBaseUrl("not-a-url")).toBe(true);
   });
 });

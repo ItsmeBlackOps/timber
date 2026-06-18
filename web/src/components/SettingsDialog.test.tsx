@@ -74,9 +74,12 @@ describe("SettingsDialog", () => {
 
     await user.type(screen.getByLabelText(/read key/i), "r-secret");
     await user.clear(screen.getByLabelText(/base url/i));
+    // Same-origin absolute base URL (location.origin in jsdom). A cross-origin
+    // value is rejected on save — see the security tests below — so this test
+    // uses a legitimate same-origin URL to exercise the persist path.
     await user.type(
       screen.getByLabelText(/base url/i),
-      "https://timber.example.com",
+      "http://localhost:3000",
     );
     await user.selectOptions(screen.getByLabelText(/theme/i), "dark");
     await user.clear(screen.getByLabelText(/tail interval/i));
@@ -90,12 +93,69 @@ describe("SettingsDialog", () => {
 
     const s = loadSettings();
     expect(s.readKey).toBe("r-secret");
-    expect(s.apiBaseUrl).toBe("https://timber.example.com");
+    expect(s.apiBaseUrl).toBe("http://localhost:3000");
     expect(s.theme).toBe("dark");
     expect(s.tailIntervalMs).toBe(5000);
     expect(s.userKeys).toEqual(["userId", "accountId"]);
     expect(s.slowMs).toBe(900);
     expect(onClose).toHaveBeenCalled();
+  });
+
+  // SECURITY (read-key exfiltration): the read key is attached to requests built
+  // from apiBaseUrl. A cross-origin base URL would send the key to a foreign
+  // host, so saving one must be refused at this boundary (defence-in-depth on
+  // top of the request-time gate in api.ts).
+  it("refuses to save a cross-origin API base URL (does not persist, stays open)", async () => {
+    const user = userEvent.setup({ delay: null });
+    const onClose = vi.fn();
+    render(<SettingsDialog open onClose={onClose} />);
+
+    await user.type(screen.getByLabelText(/read key/i), "r-secret");
+    await user.clear(screen.getByLabelText(/base url/i));
+    await user.type(
+      screen.getByLabelText(/base url/i),
+      "https://attacker.evil.example",
+    );
+    await user.click(screen.getByRole("button", { name: /save/i }));
+
+    // Nothing persisted and the dialog stays open so the operator can fix it.
+    expect(loadSettings().apiBaseUrl).toBe(DEFAULTS.apiBaseUrl);
+    expect(loadSettings().readKey).toBe(DEFAULTS.readKey);
+    expect(onClose).not.toHaveBeenCalled();
+    // The offending field is marked invalid and an error is announced.
+    const field = screen.getByLabelText(/base url/i);
+    expect(field).toHaveAttribute("aria-invalid", "true");
+    expect(screen.getByRole("alert")).toHaveTextContent(/same origin/i);
+  });
+
+  it("saves normally when the API base URL is same-origin (no false positive)", async () => {
+    const user = userEvent.setup({ delay: null });
+    const onClose = vi.fn();
+    render(<SettingsDialog open onClose={onClose} />);
+
+    await user.clear(screen.getByLabelText(/base url/i));
+    await user.type(screen.getByLabelText(/base url/i), "/api");
+    await user.click(screen.getByRole("button", { name: /save/i }));
+
+    expect(loadSettings().apiBaseUrl).toBe("/api");
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it("clears the base-URL error once a valid value is saved", async () => {
+    const user = userEvent.setup({ delay: null });
+    render(<SettingsDialog open onClose={() => {}} />);
+
+    const field = screen.getByLabelText(/base url/i);
+    await user.clear(field);
+    await user.type(field, "https://attacker.evil.example");
+    await user.click(screen.getByRole("button", { name: /save/i }));
+    expect(screen.getByRole("alert")).toBeInTheDocument();
+
+    await user.clear(field);
+    await user.type(field, "http://localhost:3000");
+    await user.click(screen.getByRole("button", { name: /save/i }));
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(loadSettings().apiBaseUrl).toBe("http://localhost:3000");
   });
 
   it("applies the chosen theme to the document on save", async () => {

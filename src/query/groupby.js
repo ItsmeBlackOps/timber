@@ -15,9 +15,16 @@ const MAX_LIKE_CHARS = 128;
 const INT_RE = /^-?\d+$/;
 const DEFAULT_LIMIT = 20;
 const MAX_LIMIT = 100;
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 const fail = (error) => ({ ok: false, error });
 const escapeRegex = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+// Same date parsing as facets/stats: ISO-8601 string or epoch-ms digits.
+const parseDate = (raw) => {
+  const d = /^\d+$/.test(raw) ? new Date(Number(raw)) : new Date(raw);
+  return Number.isNaN(d.getTime()) ? null : d;
+};
 
 // groupby's own knobs; everything else is a logs filter param forwarded to the
 // shared builder. `cursor` is dropped here (not forwarded): groupby has no
@@ -44,17 +51,43 @@ export function parseGroupByQuery(searchParams) {
     like = rawLike;
   }
 
-  // Reuse the logs filter surface verbatim (app/env/level/event/from/to/q/
-  // ids.*/data.*), minus groupby's own params. Any unknown param still 400s
-  // because buildLogsFilter rejects it.
+  // SECURITY (resource-exhaustion / query-denial DoS): groupby's $group key is
+  // sender-chosen and uncapped (by=ids.requestId etc.), and ids.*/data.* keys are
+  // unindexed (PRD §7.4). Without a bounded window an unwindowed `by=ids.requestId`
+  // would $group over the ENTIRE retained collection (debug 7d … error 90d) —
+  // maxTimeMS bounds TIME, not the per-distinct-value $group/$sort memory, so a
+  // no-disk Mongo 400s (code 292) and a disk-enabled one COLLSCAN-spills to disk.
+  // So, exactly like facets+stats (and per spec §5.2 "time-windowed, default last
+  // 24h"), DEFAULT a 24h window: to = now, from = to − 24h. Each side defaults
+  // independently; an explicit value is preserved. The resolved window is fed back
+  // through the shared builder (canonical epoch-ms) so format + inverted-window
+  // (from ≥ to) validation and the receivedAt clause are all produced in one place.
+  const toRaw = params.get('to');
+  let to = new Date();
+  if (toRaw !== null) {
+    to = parseDate(toRaw);
+    if (to === null) return fail(`invalid to "${toRaw}" (ISO-8601 or epoch-ms expected)`);
+  }
+  const fromRaw = params.get('from');
+  let from = new Date(to.getTime() - DAY_MS);
+  if (fromRaw !== null) {
+    from = parseDate(fromRaw);
+    if (from === null) return fail(`invalid from "${fromRaw}" (ISO-8601 or epoch-ms expected)`);
+  }
+
+  // Reuse the logs filter surface verbatim (app/env/level/event/q/ids.*/data.*),
+  // minus groupby's own params; from/to are replaced by the resolved window above.
+  // Any unknown param still 400s because buildLogsFilter rejects it.
   const filterParams = new URLSearchParams();
   for (const [name, value] of params) {
-    if (!OWN_PARAMS.has(name)) filterParams.append(name, value);
+    if (!OWN_PARAMS.has(name) && name !== 'from' && name !== 'to') filterParams.append(name, value);
   }
+  filterParams.set('from', String(from.getTime()));
+  filterParams.set('to', String(to.getTime()));
   const built = buildLogsFilter(filterParams);
-  if (!built.ok) return built;
+  if (!built.ok) return built; // surfaces the shared inverted-window 400 for from ≥ to
 
-  const value = { by, filter: built.value.filter, limit };
+  const value = { by, filter: built.value.filter, limit, from, to };
   if (like !== undefined) value.like = like;
   return { ok: true, value };
 }
@@ -90,5 +123,12 @@ export async function runGroupBy(collection, value, { maxTimeMS } = {}) {
   const groups = (facet.groups ?? []).map((g) => ({ value: g._id, count: g.count }));
   const shown = groups.reduce((sum, g) => sum + g.count, 0);
   const otherCount = Math.max(0, total - shown); // floor at 0 against any drift
-  return { by: value.by, total, groups, otherCount };
+  const out = { by: value.by, total, groups, otherCount };
+  // Echo the resolved scan window (spec §5.2) so a client sees the bounded range a
+  // defaulted query ran over. parseGroupByQuery always sets from/to; the key is
+  // omitted only when runGroupBy is unit-tested with a bare value (no window).
+  if (value.from instanceof Date && value.to instanceof Date) {
+    out.window = { from: value.from.toISOString(), to: value.to.toISOString() };
+  }
+  return out;
 }

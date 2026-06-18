@@ -30,6 +30,16 @@ export function parseFacetsQuery(searchParams) {
     if (from === null) return { ok: false, error: 'from: expected ISO-8601 date or epoch milliseconds' };
   }
 
+  // Reject an inverted/empty window (from >= to) with a 400 rather than building
+  // an impossible {$gte: later, $lt: earlier} $match that silently returns empty
+  // facet sets with a 200 — consistent with the unknown-parameter strictness
+  // above and with buildLogsFilter/parseStatsQuery. The default window
+  // (from = to - 24h) is always valid; boundary is `>=` since $gte/$lt can never
+  // overlap when from === to.
+  if (from.getTime() >= to.getTime()) {
+    return { ok: false, error: 'from must be earlier than to (got an inverted or empty time window)' };
+  }
+
   const value = { from, to };
   const app = searchParams.get('app');
   if (app) value.app = app;

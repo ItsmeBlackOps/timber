@@ -37,6 +37,16 @@ export function parseStatsQuery(searchParams) {
     if (from === null) return { ok: false, error: 'from: expected ISO-8601 date or epoch milliseconds' };
   }
 
+  // Reject an inverted/empty window (from >= to) with a 400 rather than building
+  // an impossible {$gte: later, $lt: earlier} $match that silently returns zero
+  // buckets with a 200 — consistent with the unknown-parameter strictness above
+  // and with buildLogsFilter. The default window (from = to - 24h) is always
+  // valid; this only bites a caller who transposes from/to or passes a future
+  // from. Boundary is `>=`: $gte/$lt can never overlap when from === to.
+  if (from.getTime() >= to.getTime()) {
+    return { ok: false, error: 'from must be earlier than to (got an inverted or empty time window)' };
+  }
+
   const value = { group, from, to };
   const app = searchParams.get('app');
   if (app) value.app = app;

@@ -121,6 +121,62 @@ describe('apiGet', () => {
     expect(hit).toBe(true)
   })
 
+  // SECURITY (key-exfiltration / SSRF-to-wrong-origin): apiBaseUrl is operator-
+  // settable free text with no host validation. The high-value read key must
+  // never be transmitted off-origin, no matter how apiBaseUrl was populated
+  // (Settings UI today; a future URL param / imported view / postMessage). The
+  // Authorization header is gated to the resolved request origin === location's.
+  it('does NOT send the Authorization header when apiBaseUrl is a cross-origin host', async () => {
+    setSettings({ apiBaseUrl: 'https://attacker.evil.example', readKey: 'r-prod-SECRET-readkey' })
+    let seenAuth: string | null = 'UNSET'
+    let hit = false
+    server.use(
+      http.get('https://attacker.evil.example/v1/logs', ({ request }) => {
+        hit = true
+        seenAuth = request.headers.get('authorization')
+        return HttpResponse.json({ items: [], nextCursor: null } satisfies LogsResponse)
+      }),
+    )
+
+    await getLogs(new URLSearchParams({ app: 'billing' }))
+
+    // The request may still go out (server decides), but the secret must not ride along.
+    expect(hit).toBe(true)
+    expect(seenAuth).toBeNull()
+  })
+
+  it('does NOT leak the read key cross-origin for stats either', async () => {
+    setSettings({ apiBaseUrl: 'https://attacker.evil.example', readKey: 'r-prod-SECRET-readkey' })
+    let seenAuth: string | null = 'UNSET'
+    server.use(
+      http.get('https://attacker.evil.example/v1/stats', ({ request }) => {
+        seenAuth = request.headers.get('authorization')
+        return HttpResponse.json({ buckets: [], totals: { count: 0 } })
+      }),
+    )
+
+    await getStats(new URLSearchParams()).catch(() => {})
+
+    expect(seenAuth).toBeNull()
+  })
+
+  it('STILL sends the Authorization header when apiBaseUrl is an absolute SAME-origin URL', async () => {
+    // location.origin is http://localhost:3000 in the jsdom test env. A same-origin
+    // absolute base URL is legitimate (operator's same-origin proxy) and must keep the key.
+    setSettings({ apiBaseUrl: 'http://localhost:3000', readKey: 'tb_read_same_origin' })
+    let seenAuth: string | null = 'UNSET'
+    server.use(
+      http.get('http://localhost:3000/v1/logs', ({ request }) => {
+        seenAuth = request.headers.get('authorization')
+        return HttpResponse.json({ items: [], nextCursor: null } satisfies LogsResponse)
+      }),
+    )
+
+    await getLogs(new URLSearchParams())
+
+    expect(seenAuth).toBe('Bearer tb_read_same_origin')
+  })
+
   it('appends URLSearchParams as a query string', async () => {
     let seenUrl = ''
     server.use(

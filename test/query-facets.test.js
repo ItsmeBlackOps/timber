@@ -67,6 +67,23 @@ describe('parseFacetsQuery', () => {
     assert.equal(parseFacetsQuery(sp('to=2026-13-99')).ok, false);
   });
 
+  it('rejects an inverted window (from > to) with a 400', () => {
+    const res = parseFacetsQuery(sp('from=2026-06-18T00:00:00.000Z&to=2026-06-17T00:00:00.000Z'));
+    assert.equal(res.ok, false);
+    assert.match(res.error, /from/);
+  });
+
+  it('rejects an empty window (from === to) with a 400 ($gte/$lt never overlap)', () => {
+    const res = parseFacetsQuery(sp('from=2026-06-17T00:00:00.000Z&to=2026-06-17T00:00:00.000Z'));
+    assert.equal(res.ok, false);
+    assert.match(res.error, /from/);
+  });
+
+  it('still accepts the default 24h window and an explicit forward window', () => {
+    assert.equal(parseFacetsQuery(sp('')).ok, true);
+    assert.equal(parseFacetsQuery(sp('from=2026-06-17T00:00:00.000Z&to=2026-06-18T00:00:00.000Z')).ok, true);
+  });
+
   it('rejects unknown parameters, naming the offender', () => {
     const res = parseFacetsQuery(sp('app=dash&foo=1'));
     assert.equal(res.ok, false);
