@@ -126,6 +126,17 @@ export function loadConfig(env = process.env) {
     // $regex backtracking and unindexed COLLSCANs so a single read request can't
     // pin a Mongo worker indefinitely. 0 disables the cap.
     queryMaxTimeMs: clampedInt(env, 'TIMBER_QUERY_MAX_TIME_MS', 5000, 0, 600000),
+    // HTTP socket hardening (applied to the node:http server in buildApp). Node's
+    // defaults are dangerously slack for an ingest endpoint that reserves a
+    // request's declared content-length in the WAL budget the instant it commits
+    // to appending: a client that declares a large body and then trickles/stalls
+    // it would otherwise hold that reservation for the full requestTimeout default
+    // (300_000ms) and starve honest concurrent writers with 429s. We cap the whole
+    // request and the headers phase to conservative finite budgets so a stalled
+    // upload is reaped — and its reservation released — in seconds, not minutes.
+    // Operator-tunable to expected batch sizes; both are positive-integer ms.
+    requestTimeoutMs: positiveInt(env, 'TIMBER_REQUEST_TIMEOUT_MS', 30000),
+    headersTimeoutMs: positiveInt(env, 'TIMBER_HEADERS_TIMEOUT_MS', 15000),
     // 0 is the documented default (cluster mode off), so explicit 0 is valid here.
     clusterWorkers: Math.floor(readNumber(env, 'TIMBER_CLUSTER', 0, { allowZero: true })),
     maxBodyBytes: 1_048_576,

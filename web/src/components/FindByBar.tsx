@@ -3,7 +3,13 @@
 // value; values autocomplete through useGroupBy(by=`ids.<key>`, like=<typed>)
 // over the current filter+range. Selecting a suggestion (or pressing Add)
 // emits an `ids.<key>=value` filter for the caller to merge into Filters.ids.
-import { useId, useMemo, useState } from "react";
+//
+// a11y: the value field is a WAI-ARIA autocomplete combobox (mirrors
+// EventCombobox) — role="combobox" + aria-expanded + aria-controls (only while
+// the popup is shown) + aria-activedescendant over real role="option" rows, with
+// ArrowUp/ArrowDown/Enter/Escape keyboard support. Suggestions are plain option
+// rows (no wrapping buttons), so the listbox interaction model stays intact.
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 
 import { useFacets } from "@/hooks/useFacets";
 import { useGroupBy } from "@/hooks/useGroupBy";
@@ -48,6 +54,11 @@ export function FindByBar({ onAdd, app, range, filters }: FindByBarProps) {
 
   const [key, setKey] = useState("userEmail");
   const [value, setValue] = useState("");
+  // Whether the suggestion popup is open, and the keyboard-highlighted row
+  // (-1 = none active). `open` gates visibility; the list is only actually shown
+  // when there is also at least one suggestion.
+  const [open, setOpen] = useState(false);
+  const [active, setActive] = useState(-1);
   const trimmed = value.trim();
 
   // Value autocomplete: only query once the user has typed something.
@@ -65,13 +76,85 @@ export function FindByBar({ onAdd, app, range, filters }: FindByBarProps) {
       .filter((v): v is string => typeof v === "string");
   }, [groupByQ.data, trimmed]);
 
+  const listVisible = open && suggestions.length > 0;
+
   const listId = useId();
+  // Stable per-option id so aria-activedescendant can point at the row.
+  const optionId = (i: number) => `${listId}-opt-${i}`;
+
+  // The highlight indexes into `suggestions`; reset it whenever the list
+  // contents change or the popup closes so it can never dangle past the end or
+  // survive a reopen.
+  useEffect(() => {
+    setActive(-1);
+  }, [suggestions, open]);
+
+  const listRef = useRef<HTMLUListElement>(null);
+  // Keep the highlighted row in view when navigating with the keyboard.
+  useEffect(() => {
+    if (!listVisible || active < 0) return;
+    const el = listRef.current?.querySelector<HTMLElement>(
+      `#${CSS.escape(optionId(active))}`,
+    );
+    // scrollIntoView is absent in some test environments (jsdom); it's a pure
+    // UX nicety, so guard rather than depend on it.
+    el?.scrollIntoView?.({ block: "nearest" });
+    // optionId is derived purely from listId (stable), so it needn't be a dep.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active, listVisible, listId]);
 
   function emit(v: string) {
     const val = v.trim();
     if (val === "") return;
     onAdd({ key, value: val });
     setValue("");
+    setOpen(false);
+  }
+
+  function selectAt(i: number) {
+    const s = suggestions[i];
+    if (s === undefined) return;
+    emit(s);
+  }
+
+  function onKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
+    const n = suggestions.length;
+    switch (e.key) {
+      case "ArrowDown":
+        e.preventDefault();
+        if (!listVisible) {
+          setOpen(true);
+          return;
+        }
+        // From "none" (-1) ArrowDown lands on the first row; past the end wraps.
+        setActive((i) => (i + 1) % n);
+        break;
+      case "ArrowUp":
+        e.preventDefault();
+        if (!listVisible) {
+          setOpen(true);
+          return;
+        }
+        // From "none" (-1) ArrowUp lands on the last row; before 0 wraps.
+        setActive((i) => (i <= 0 ? n - 1 : i - 1));
+        break;
+      case "Enter":
+        // Only intercept Enter when a row is actually highlighted; otherwise
+        // leave it alone so the enclosing form submits the typed value.
+        if (listVisible && active >= 0) {
+          e.preventDefault();
+          selectAt(active);
+        }
+        break;
+      case "Escape":
+        if (open) {
+          e.preventDefault();
+          setOpen(false);
+        }
+        break;
+      default:
+        break;
+    }
   }
 
   return (
@@ -115,13 +198,23 @@ export function FindByBar({ onAdd, app, range, filters }: FindByBarProps) {
       >
         <input
           type="text"
-          role="textbox"
+          role="combobox"
           aria-label={`Value for ${key}`}
+          aria-expanded={listVisible}
           aria-autocomplete="list"
-          aria-controls={listId}
+          aria-controls={listVisible ? listId : undefined}
+          aria-activedescendant={
+            listVisible && active >= 0 ? optionId(active) : undefined
+          }
           placeholder={`e.g. ${key === "userEmail" ? "user@example.com" : "value"}`}
           value={value}
-          onChange={(e) => setValue(e.target.value)}
+          onChange={(e) => {
+            setValue(e.target.value);
+            setOpen(true);
+          }}
+          onKeyDown={onKeyDown}
+          onFocus={() => setOpen(true)}
+          onBlur={() => setOpen(false)}
           style={{
             padding: "5px 8px",
             minWidth: 200,
@@ -146,8 +239,9 @@ export function FindByBar({ onAdd, app, range, filters }: FindByBarProps) {
         </button>
       </form>
 
-      {suggestions.length > 0 ? (
+      {listVisible ? (
         <ul
+          ref={listRef}
           id={listId}
           role="listbox"
           aria-label={`${key} suggestions`}
@@ -168,25 +262,34 @@ export function FindByBar({ onAdd, app, range, filters }: FindByBarProps) {
             boxShadow: "0 6px 24px rgba(0,0,0,0.18)",
           }}
         >
-          {suggestions.map((s) => (
-            <li key={s} role="option" aria-selected={false}>
-              <button
-                type="button"
-                onClick={() => emit(s)}
-                style={{
-                  display: "block",
-                  width: "100%",
-                  textAlign: "left",
-                  padding: "6px 8px",
-                  borderRadius: 4,
-                  border: "none",
-                  background: "transparent",
-                  color: "var(--tb-text)",
-                  cursor: "pointer",
-                }}
-              >
-                {s}
-              </button>
+          {suggestions.map((s, i) => (
+            <li
+              key={s}
+              id={optionId(i)}
+              role="option"
+              aria-selected={i === active}
+              // mousedown (not click) so selection wins the race with input blur.
+              onMouseDown={(e) => {
+                e.preventDefault();
+                selectAt(i);
+              }}
+              // Hovering syncs the keyboard highlight so mouse + keyboard agree.
+              onMouseEnter={() => setActive(i)}
+              style={{
+                display: "block",
+                width: "100%",
+                textAlign: "left",
+                padding: "6px 8px",
+                borderRadius: 4,
+                cursor: "pointer",
+                color: "var(--tb-text)",
+                background:
+                  i === active
+                    ? "color-mix(in srgb, var(--tb-acc) 18%, transparent)"
+                    : "transparent",
+              }}
+            >
+              {s}
             </li>
           ))}
         </ul>

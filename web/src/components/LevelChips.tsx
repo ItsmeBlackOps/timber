@@ -21,6 +21,11 @@ const LEVEL_VAR: Record<Level, string> = {
  * from `value` (selection order is preserved in server order). An empty
  * selection means "no level constraint" — filters.ts serializes empty/all-4 to
  * no `level=` param.
+ *
+ * a11y (WCAG AA): the per-level tokens (esp. warn/error in the light theme) drop
+ * below 4.5:1 when used as *text* over the surface or the 16% tint, so a selected
+ * chip carries its severity color on the border + tint and renders the label with
+ * the high-contrast --tb-text token (>=12:1 in both themes). See LevelChips.test.
  */
 export function LevelChips({ value, onChange }: LevelChipsProps) {
   const selected = new Set<Level>(value);
@@ -51,7 +56,9 @@ export function LevelChips({ value, onChange }: LevelChipsProps) {
               fontWeight: 600,
               textTransform: "capitalize",
               cursor: "pointer",
-              color: on ? color : "var(--tb-mut)",
+              // Selected: high-contrast label text (the level color rides on the
+              // border + tint instead, since the level tokens fail AA as text).
+              color: on ? "var(--tb-text)" : "var(--tb-mut)",
               border: `1px solid ${on ? color : "var(--tb-border)"}`,
               background: on
                 ? `color-mix(in srgb, ${color} 16%, transparent)`

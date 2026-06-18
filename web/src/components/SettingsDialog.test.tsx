@@ -68,7 +68,7 @@ describe("SettingsDialog", () => {
   });
 
   it("persists edited values to settings on save", async () => {
-    const user = userEvent.setup();
+    const user = userEvent.setup({ delay: null });
     const onClose = vi.fn();
     render(<SettingsDialog open onClose={onClose} />);
 
@@ -99,7 +99,7 @@ describe("SettingsDialog", () => {
   });
 
   it("applies the chosen theme to the document on save", async () => {
-    const user = userEvent.setup();
+    const user = userEvent.setup({ delay: null });
     render(<SettingsDialog open onClose={() => {}} />);
     await user.selectOptions(screen.getByLabelText(/theme/i), "dark");
     await user.click(screen.getByRole("button", { name: /save/i }));
@@ -107,7 +107,7 @@ describe("SettingsDialog", () => {
   });
 
   it("does not persist changes when cancelled", async () => {
-    const user = userEvent.setup();
+    const user = userEvent.setup({ delay: null });
     const onClose = vi.fn();
     render(<SettingsDialog open onClose={onClose} />);
 
@@ -119,11 +119,90 @@ describe("SettingsDialog", () => {
   });
 
   it("closes via the close (X) control without saving", async () => {
-    const user = userEvent.setup();
+    const user = userEvent.setup({ delay: null });
     const onClose = vi.fn();
     render(<SettingsDialog open onClose={onClose} />);
     await user.click(screen.getByRole("button", { name: /close/i }));
     expect(onClose).toHaveBeenCalled();
     expect(loadSettings().readKey).toBe(DEFAULTS.readKey);
+  });
+
+  it("closes when Escape is pressed without saving", async () => {
+    const user = userEvent.setup({ delay: null });
+    const onClose = vi.fn();
+    render(<SettingsDialog open onClose={onClose} />);
+    await user.type(screen.getByLabelText(/read key/i), "should-not-save");
+    await user.keyboard("{Escape}");
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(loadSettings().readKey).toBe(DEFAULTS.readKey);
+  });
+
+  it("moves focus into the dialog when it opens", () => {
+    render(<SettingsDialog open onClose={() => {}} />);
+    const dialog = screen.getByRole("dialog");
+    // Focus must land inside the dialog (not stay on the page behind it) so a
+    // keyboard / screen-reader user is placed in the modal.
+    expect(dialog.contains(document.activeElement)).toBe(true);
+  });
+
+  it("restores focus to the invoking element when it closes", async () => {
+    // A real trigger button outside the dialog, focused before opening.
+    const trigger = document.createElement("button");
+    trigger.textContent = "Settings";
+    document.body.appendChild(trigger);
+    trigger.focus();
+    expect(document.activeElement).toBe(trigger);
+
+    const { rerender } = render(
+      <SettingsDialog open onClose={() => {}} />,
+    );
+    // Focus moved into the dialog on open.
+    expect(document.activeElement).not.toBe(trigger);
+
+    rerender(<SettingsDialog open={false} onClose={() => {}} />);
+    // On close, focus returns to the element that had it before opening.
+    expect(document.activeElement).toBe(trigger);
+
+    trigger.remove();
+  });
+
+  it("traps Tab focus within the dialog (wraps last -> first)", async () => {
+    const user = userEvent.setup({ delay: null });
+    render(<SettingsDialog open onClose={() => {}} />);
+    const dialog = screen.getByRole("dialog");
+    const focusables = within(dialog).getAllByRole("button");
+    const last = focusables[focusables.length - 1]; // Save
+    last.focus();
+    expect(document.activeElement).toBe(last);
+    await user.tab();
+    // Tabbing past the last focusable wraps back inside the dialog, not out.
+    expect(dialog.contains(document.activeElement)).toBe(true);
+  });
+
+  it("traps Shift+Tab focus within the dialog (wraps first -> last)", async () => {
+    const user = userEvent.setup({ delay: null });
+    render(<SettingsDialog open onClose={() => {}} />);
+    const dialog = screen.getByRole("dialog");
+    const closeBtn = within(dialog).getByRole("button", { name: /close/i });
+    closeBtn.focus();
+    expect(document.activeElement).toBe(closeBtn);
+    await user.tab({ shift: true });
+    // Shift+Tab before the first focusable wraps to the end, staying inside.
+    expect(dialog.contains(document.activeElement)).toBe(true);
+    expect(document.activeElement).not.toBe(closeBtn);
+  });
+
+  it("does not hardcode #fff text on the accent Save button (contrast)", () => {
+    // Dark-theme --tb-acc is #838CF7; white-on-accent is 2.97:1 (< AA 4.5:1).
+    // The Save button must use a theme token (var(--tb-bg)) like SegButton, not
+    // a literal white, so its label stays readable in dark mode.
+    render(<SettingsDialog open onClose={() => {}} />);
+    const save = screen.getByRole("button", { name: /save/i });
+    const color = save.style.color.replace(/\s+/g, "").toLowerCase();
+    expect(color).not.toBe("#fff");
+    expect(color).not.toBe("#ffffff");
+    expect(color).not.toBe("white");
+    expect(color).not.toBe("rgb(255,255,255)");
+    expect(color).toBe("var(--tb-bg)");
   });
 });

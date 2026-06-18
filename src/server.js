@@ -246,6 +246,33 @@ export function buildApp(config, deps) {
     });
   });
 
+  // Socket hardening. The POST /v1/logs admission gate reserves a request's
+  // declared content-length in pendingBytes the instant it commits to appending
+  // and only releases it once readBody settles (success or abort). Node's default
+  // requestTimeout (300_000ms) lets a client that declares a large body and then
+  // trickles or stalls it pin that reservation for ~5 minutes, forcing honest
+  // concurrent writers to 429 'wal budget exceeded'. Capping requestTimeout (whole
+  // request) and headersTimeout (header phase) to conservative finite budgets
+  // makes the server reap a stalled upload in seconds — Node answers 408 / resets
+  // the socket, readBody's close/abort handler fires, and the finally releases
+  // pendingBytes. Both are config-driven (TIMBER_REQUEST_TIMEOUT_MS /
+  // TIMBER_HEADERS_TIMEOUT_MS) and never 0 (0 = unlimited, which reintroduces the
+  // bug).
+  server.requestTimeout = config.requestTimeoutMs;
+  server.headersTimeout = config.headersTimeoutMs;
+  // CRITICAL: Node only sweeps for requestTimeout/headersTimeout violations once
+  // per connectionsCheckingInterval (default 30_000ms). With the default, a small
+  // requestTimeout is effectively ignored until the next 30s tick — the stalled
+  // upload would keep its reservation for up to ~30s regardless of a 400ms
+  // requestTimeout. We tighten the sweep to a quarter of the smaller timeout
+  // (floored at 100ms so we never busy-spin) so reaping actually tracks the
+  // configured budget: e.g. requestTimeout=30_000 sweeps ~every 3.75s; the test's
+  // requestTimeout=400 sweeps ~every 100ms and reaps in well under a second.
+  server.connectionsCheckingInterval = Math.max(
+    100,
+    Math.floor(Math.min(config.requestTimeoutMs, config.headersTimeoutMs) / 4),
+  );
+
   async function shutdown() {
     if (server.listening) {
       await new Promise((resolveClose) => {

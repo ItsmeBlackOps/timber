@@ -14,7 +14,7 @@
 //     validate.js) renders its head plus a loud "truncated (N bytes)" badge.
 //
 // Colors come from theme tokens (tokens.css) via CSS variables — never hardcode.
-import { useState } from "react";
+import { memo, useState } from "react";
 
 /**
  * A filter fragment produced by clicking a leaf (or an ids chip). The Explore
@@ -47,8 +47,21 @@ export interface JsonTreeProps {
 const MUT = "var(--tb-mut)";
 const ACC = "var(--tb-acc)";
 const TEXT = "var(--tb-text)";
+// String values are the most common leaf in API/LLM payloads, so they get a
+// dedicated AA-compliant token rather than the low-contrast --tb-ok status green
+// (which fails 4.5:1 in light theme). See tokens.css.
+const STRING = "var(--tb-string)";
 
 const STRING_CLAMP = 120;
+
+// Eager-breadth cap: the depth budget (defaultOpenDepth) keeps DEEP nodes
+// collapsed, but a WIDE container at/under that depth would otherwise mount
+// every child on first render — e.g. request.messages[60] or a 200-key meta
+// object at depth 1. For typical LLM/API payloads (and especially near the
+// TIMBER_MAX_DATA_KB cap) that is hundreds-to-thousands of nodes eagerly
+// mounted. So a container with more than this many entries starts collapsed
+// regardless of depth; the operator expands it explicitly (children stay lazy).
+const EAGER_BREADTH = 50;
 
 type JsonKind = "object" | "array" | "string" | "number" | "boolean" | "null";
 
@@ -183,7 +196,7 @@ function ClampedString({
   const shown = !long || open ? text : text.slice(0, STRING_CLAMP) + "…";
 
   return (
-    <span style={{ color: "var(--tb-ok)", wordBreak: "break-word" }}>
+    <span style={{ color: STRING, wordBreak: "break-word" }}>
       {'"'}
       <Highlighted text={shown} highlight={highlight} />
       {'"'}
@@ -220,8 +233,8 @@ function Highlighted({ text, highlight }: { text: string; highlight?: string }) 
       {text.slice(0, idx)}
       <mark
         style={{
-          background: "var(--tb-warn)",
-          color: "var(--tb-bg)",
+          background: "var(--tb-mark-bg)",
+          color: "var(--tb-mark-fg)",
           borderRadius: 2,
           padding: "0 1px",
         }}
@@ -292,7 +305,12 @@ interface NodeProps {
   highlight?: string;
 }
 
-function Node({
+// Memoized so that interactions which DON'T change a node's own props (e.g.
+// expanding a sibling) don't re-render this subtree, and so that — paired with
+// DetailPanel's deferred `highlight` — typing in the in-document search doesn't
+// block on re-rendering the whole open tree. Recursion below references the
+// memoized `Node` const, so the whole tree benefits.
+const Node = memo(function Node({
   label,
   value,
   path,
@@ -302,7 +320,23 @@ function Node({
   highlight,
 }: NodeProps) {
   const container = isContainer(value);
-  const [open, setOpen] = useState(depth <= defaultOpenDepth);
+
+  // Container entries are needed both to decide the INITIAL open state (so a
+  // wide container can start collapsed, see EAGER_BREADTH) and to render the
+  // children. Computed once here; cheap (no recursion / no stringify).
+  const entries: [string, unknown][] = container
+    ? Array.isArray(value)
+      ? value.map((v, i) => [String(i), v])
+      : Object.entries(value as Record<string, unknown>)
+    : [];
+  const count = entries.length;
+
+  // Open initially when within the depth budget AND not too wide. Wide
+  // containers stay collapsed regardless of depth so their children don't mount
+  // eagerly — this is the eager-breadth cap.
+  const [open, setOpen] = useState(
+    depth <= defaultOpenDepth && count <= EAGER_BREADTH,
+  );
 
   const fragment = onPivot ? toFragment(path, value) : null;
 
@@ -351,10 +385,7 @@ function Node({
   }
 
   // Container (object/array): collapsible header + lazily-rendered children.
-  const entries: [string, unknown][] = Array.isArray(value)
-    ? value.map((v, i) => [String(i), v])
-    : Object.entries(value as Record<string, unknown>);
-  const count = entries.length;
+  // (entries/count were computed above to seed the initial open state.)
   const open_brace = Array.isArray(value) ? "[" : "{";
   const close_brace = Array.isArray(value) ? "]" : "}";
 
@@ -430,7 +461,7 @@ function Node({
       ) : null}
     </div>
   );
-}
+});
 
 /**
  * Public entry. Renders `value` rooted at `path`. The root container itself is

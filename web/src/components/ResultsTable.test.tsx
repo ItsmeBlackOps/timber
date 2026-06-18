@@ -1,3 +1,4 @@
+import { memo } from "react";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ResultsTable } from "@/components/ResultsTable";
@@ -55,6 +56,33 @@ function installIntersectionObserver() {
   }
   vi.stubGlobal("IntersectionObserver", MockIO as unknown as typeof IntersectionObserver);
 }
+
+// Render-counting mock of LogRow, wrapped in React.memo so it re-renders ONLY
+// when its props change by reference. This lets a test prove ResultsTable feeds
+// each row reference-stable props (notably a stable per-row onClick): with a
+// stable onClick the memoized row skips re-render when the parent re-renders
+// with the same `items` reference; with a fresh inline `() => onRowClick(id)`
+// closure per render it would re-render every time, defeating the memo.
+const rowRenders = new Map<string, number>();
+vi.mock("@/components/LogRow", () => ({
+  LogRow: memo(function MockLogRow({
+    doc,
+    selected,
+    onClick,
+  }: {
+    doc: LogDoc;
+    selected: boolean;
+    onClick: () => void;
+  }) {
+    rowRenders.set(doc._id, (rowRenders.get(doc._id) ?? 0) + 1);
+    return (
+      <div role="row" aria-selected={selected} onClick={onClick}>
+        <span>{doc.event}</span>
+        <span>{doc.message}</span>
+      </div>
+    );
+  }),
+}));
 
 function makeItems(n: number): LogDoc[] {
   return Array.from({ length: n }, (_, i) => ({
@@ -293,5 +321,91 @@ describe("ResultsTable", () => {
     // document viewport, or load-more never fires.
     expect(root).not.toBeNull();
     expect((root as Element).getAttribute("role")).toBe("grid");
+  });
+
+  // --- Re-render hygiene (perf finding) ------------------------------------
+  // ExploreRoute re-renders frequently (the 2s live-tail tick, facet churn).
+  // Each such render hands ResultsTable a fresh inline `onLoadMore` closure
+  // (explore.tsx) while the table's rows are unchanged. ResultsTable must be
+  // memoized AND must feed each row reference-stable props so the (memoized)
+  // rows don't re-render on every unrelated parent tick.
+
+  it("is wrapped in React.memo so identical props skip a re-render", () => {
+    expect(
+      (ResultsTable as unknown as { $$typeof?: symbol }).$$typeof,
+    ).toBe(Symbol.for("react.memo"));
+  });
+
+  it("does not re-render rows when the parent re-renders with the same items but a new onLoadMore", () => {
+    rowRenders.clear();
+    const items = makeItems(5);
+    const { rerender } = render(
+      <ResultsTable
+        items={items}
+        onRowClick={noop}
+        selectedId={null}
+        onLoadMore={() => {}}
+        hasMore
+        loading={false}
+      />,
+    );
+    const initial = new Map(rowRenders);
+    expect(initial.size).toBeGreaterThan(0); // some rows mounted
+
+    // Parent re-renders: SAME items reference, but a brand-new onLoadMore
+    // closure each time (exactly what `onLoadMore={() => fetchNextPage()}` does).
+    rerender(
+      <ResultsTable
+        items={items}
+        onRowClick={noop}
+        selectedId={null}
+        onLoadMore={() => {}}
+        hasMore
+        loading={false}
+      />,
+    );
+
+    // Every row that was already mounted must NOT have re-rendered: the per-row
+    // onClick (and doc/selected) stayed reference-stable, so React.memo on the
+    // row short-circuits. A fresh `() => onRowClick(doc._id)` per render would
+    // bump every count here.
+    for (const [id, count] of initial) {
+      expect(rowRenders.get(id)).toBe(count);
+    }
+  });
+
+  it("re-renders only the row whose selection changed", () => {
+    rowRenders.clear();
+    const items = makeItems(5);
+    const { rerender } = render(
+      <ResultsTable
+        items={items}
+        onRowClick={noop}
+        selectedId={null}
+        onLoadMore={() => {}}
+        hasMore={false}
+        loading={false}
+      />,
+    );
+    const initial = new Map(rowRenders);
+
+    // Select id-2: only that row's `selected` prop flips.
+    rerender(
+      <ResultsTable
+        items={items}
+        onRowClick={noop}
+        selectedId="id-2"
+        onLoadMore={() => {}}
+        hasMore={false}
+        loading={false}
+      />,
+    );
+
+    // id-2 re-renders (selected true); the rest stay put.
+    expect(rowRenders.get("id-2")).toBe((initial.get("id-2") ?? 0) + 1);
+    for (const [id, count] of initial) {
+      if (id === "id-2") continue;
+      expect(rowRenders.get(id)).toBe(count);
+    }
   });
 });

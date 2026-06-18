@@ -82,9 +82,15 @@ export function GroupByPanel({ by, filters, onPick }: GroupByPanelProps) {
                     font: "inherit",
                   }}
                 >
-                  {/* proportional fill behind the label */}
+                  {/* Proportional fill behind the label. role=meter exposes the
+                      magnitude (count relative to the largest bar) to assistive
+                      tech; the fill width is the visual mirror of aria-valuenow. */}
                   <span
-                    aria-hidden="true"
+                    role="meter"
+                    aria-label={`${text}: ${g.count} of ${max}`}
+                    aria-valuenow={g.count}
+                    aria-valuemin={0}
+                    aria-valuemax={max}
                     style={{
                       position: "absolute",
                       inset: 0,

@@ -37,3 +37,39 @@ jobs:
 
       - name: Ingest bench smoke
         run: BENCH_SMOKE=1 node bench/ingest-bench.js
+
+  # Timber Console (web/) green-gate. The root job above never installs or exercises
+  # the SPA — there are no npm workspaces, so root `npm ci` skips web/ entirely — which
+  # let a broken `tsc -b`, a failing `vite build`, or a regressed vitest suite ship
+  # undetected. This job runs the plan's authoritative green-gate
+  # (docs/.../plans/2026-06-14-timber-console.md): typecheck -> test -> build, against
+  # the web workspace with its own lockfile install. It runs in parallel with the
+  # server job; either failing fails the required `ci` check on a PR.
+  web:
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: web
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          # web/ has its own package-lock.json (no workspaces); cache it explicitly so
+          # the npm cache key is derived from the web lockfile, not just the root one.
+          cache-dependency-path: web/package-lock.json
+
+      - run: npm ci
+
+      - name: Typecheck (tsc -b)
+        run: npm run typecheck
+
+      - name: Unit tests (vitest)
+        run: npm run test
+
+      - name: Build (vite)
+        run: npm run build

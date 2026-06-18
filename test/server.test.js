@@ -102,6 +102,7 @@ async function makeApp(
     walWriter: walWriterOverride,
     budgetMb,
     flusher: flusherOverride,
+    env = {},
   } = {},
 ) {
   const walDir = await mkTmpDir('timber-server-test-');
@@ -112,6 +113,7 @@ async function makeApp(
       { key: WRITE_KEY, app: 'appA', env: 'prod', mode: 'write' },
       { key: READ_KEY, app: 'reader', env: 'prod', mode: 'read' },
     ]),
+    ...env,
   });
   const walWriter = walWriterOverride ?? makeFakeWalWriter();
   const flusher = flusherOverride ?? makeFakeFlusher();
@@ -406,6 +408,173 @@ test('POST /v1/logs with undeclared (chunked) body > 1 MB is rejected', async (t
   const body = JSON.stringify({ event: 'x', data: { blob: 'a'.repeat(1_100_000) } });
   await assert.rejects(postLogs(app.port, WRITE_KEY, body));
   assert.equal(app.walWriter.appended.length, 0);
+});
+
+// --- POST /v1/logs: slow-body / socket hardening -----------------------------
+
+// The admission path reserves a request's declared content-length in pendingBytes
+// the instant it commits to appending, and only releases it in the finally after
+// readBody settles. readBody pends until the body ends, errors, or the socket
+// closes — so a client that declares a large Content-Length and then trickles or
+// stalls the body keeps its reservation held. On Node's default requestTimeout
+// (300_000ms) a handful of such stalled connections can pin pendingBytes near the
+// budget for ~5 minutes and force honest concurrent writers to 429. buildApp must
+// harden the server with a conservative finite requestTimeout/headersTimeout so a
+// stalled upload releases its reservation in seconds, not minutes.
+test('buildApp hardens the server with conservative request/headers timeouts', async (t) => {
+  const app = await makeApp(t);
+  // Node's dangerous defaults are requestTimeout=300_000 and headersTimeout=60_000.
+  // The hardened server must use a much smaller, finite request budget and must
+  // never disable the timeout (0 = unlimited, which reintroduces the bug).
+  assert.ok(
+    Number.isFinite(app.server.requestTimeout) && app.server.requestTimeout > 0,
+    `requestTimeout must be a positive finite value, got ${app.server.requestTimeout}`,
+  );
+  assert.ok(
+    app.server.requestTimeout <= 60_000,
+    `requestTimeout must be hardened well below the 300_000ms default, got ${app.server.requestTimeout}`,
+  );
+  assert.ok(
+    Number.isFinite(app.server.headersTimeout) && app.server.headersTimeout > 0,
+    `headersTimeout must be a positive finite value, got ${app.server.headersTimeout}`,
+  );
+  assert.ok(
+    app.server.headersTimeout <= app.server.requestTimeout,
+    `headersTimeout (${app.server.headersTimeout}) must not exceed requestTimeout (${app.server.requestTimeout})`,
+  );
+});
+
+// The timeouts are operator-tunable (the finding notes they should be tuned to
+// expected batch sizes), via TIMBER_REQUEST_TIMEOUT_MS / TIMBER_HEADERS_TIMEOUT_MS.
+test('request/headers timeouts are configurable via env', async (t) => {
+  const app = await makeApp(t, {
+    env: { TIMBER_REQUEST_TIMEOUT_MS: '12345', TIMBER_HEADERS_TIMEOUT_MS: '6789' },
+  });
+  assert.equal(app.server.requestTimeout, 12345);
+  assert.equal(app.server.headersTimeout, 6789);
+});
+
+// Helper: POST with an explicit Content-Length header (an "honest" sender, per
+// PRD §6.1 / the 413 path). The admission gate reserves the DECLARED size, so a
+// declared request has a non-zero estimate; the default req()/postLogs helpers
+// send the body chunked (no Content-Length -> estimate 0), which would not be
+// reservation-gated. The slow-body finding is specifically about declared sizes.
+function postLogsDeclared(port, key, payload) {
+  const body = typeof payload === 'string' ? payload : JSON.stringify(payload);
+  return req(port, 'POST', '/v1/logs', {
+    headers: {
+      'content-type': 'application/json',
+      ...(key ? auth(key) : {}),
+      'content-length': String(Buffer.byteLength(body)),
+    },
+    body,
+  });
+}
+
+// End-to-end proof: a stalled declared upload must not pin the WAL budget. With a
+// short requestTimeout, a client that declares ~all of the budget and then stalls
+// the body has its reservation auto-released when the request is reaped, so an
+// honest writer that arrives afterward is admitted (202) instead of being starved
+// with a 429 for the full default 5-minute window.
+test('a stalled declared upload releases its WAL reservation when the request times out', async (t) => {
+  const budgetMb = 0.05; // 52428 bytes
+  const budgetBytes = Math.floor(budgetMb * 1024 * 1024);
+  // A writer whose totalBytes() is 0 (so the big declared upload clears the
+  // admission gate and reaches readBody, where it holds its reservation) and
+  // whose append() resolves immediately (so the post-reap honest writer gets a
+  // clean 202 rather than blocking on an in-flight append). The default
+  // makeFakeWalWriter reports a constant 1234 totalBytes, which would push the
+  // ~budget declared upload over the gate and 429 it before it could ever stall.
+  const walWriter = {
+    appended: [],
+    append: async (docs) => {
+      walWriter.appended.push(docs);
+    },
+    totalBytes: () => 0,
+    overBudget: () => false,
+    activeSegmentSeq: () => 1,
+    forceFsync: async () => {},
+    janitor: async () => ({ deleted: [] }),
+    closed: false,
+    close: async () => {
+      walWriter.closed = true;
+    },
+  };
+  const app = await makeApp(t, {
+    budgetMb,
+    walWriter,
+    // Short, finite request budget so the stalled upload is reaped quickly.
+    env: { TIMBER_REQUEST_TIMEOUT_MS: '400', TIMBER_HEADERS_TIMEOUT_MS: '300' },
+  });
+
+  // Open a connection that declares almost the whole budget (budget - 1, so it
+  // still clears its own admission gate: total(0) + pending(0) + estimate < budget)
+  // and then never sends the body. flushHeaders() pushes the request line + headers
+  // to the server now, so the handler runs, reserves the declared size in
+  // pendingBytes, and parks in readBody awaiting a body that never arrives. The
+  // reservation stays held until the server reaps the request (pre-fix: ~5 min on
+  // the 300_000ms default; post-fix: ~400ms).
+  const declared = budgetBytes - 1;
+  let stalledReq;
+  const stalled = new Promise((resolve) => {
+    stalledReq = httpRequest(
+      {
+        host: '127.0.0.1',
+        port: app.port,
+        method: 'POST',
+        path: '/v1/logs',
+        agent: false,
+        headers: {
+          'content-type': 'application/json',
+          ...auth(WRITE_KEY),
+          'content-length': String(declared),
+        },
+      },
+      (res) => {
+        res.resume();
+        res.on('end', () => resolve({ status: res.statusCode }));
+      },
+    );
+    // Push headers but never write the body / call end(): readBody stays pending
+    // and the reservation stays held until the server's requestTimeout fires.
+    stalledReq.flushHeaders();
+    stalledReq.on('error', () => resolve({ status: 0 })); // socket reset on timeout is fine
+  });
+  // Safety net: if the server is NOT hardened (pre-fix, requestTimeout=300_000),
+  // the stall would otherwise pin the connection and hang shutdown for ~5 min.
+  // Destroy the client socket on teardown so the test process can always exit.
+  t.after(() => stalledReq?.destroy());
+
+  // Give the stalled request a moment to reach the gate and reserve its declared
+  // size, then prove an honest declared writer is starved: total(0) + pending
+  // (budget - 1) + its estimate (>= 1) >= budget -> 429.
+  let blockedNow = null;
+  const blockDeadline = Date.now() + 2000;
+  while (Date.now() < blockDeadline) {
+    const r = await postLogsDeclared(app.port, WRITE_KEY, { event: 'blocked' });
+    if (r.status === 429) {
+      blockedNow = r;
+      break;
+    }
+    await new Promise((r) => setTimeout(r, 10));
+  }
+  assert.ok(blockedNow, 'with the reservation held, an honest declared writer is 429d');
+
+  // Wait for the server to reap the stalled request (requestTimeout) and release
+  // its reservation. Then the honest writer must succeed.
+  await stalled;
+
+  let okAfter = null;
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    const r = await postLogsDeclared(app.port, WRITE_KEY, { event: 'after' });
+    if (r.status === 202) {
+      okAfter = r;
+      break;
+    }
+    await new Promise((r) => setTimeout(r, 25));
+  }
+  assert.ok(okAfter, 'after the stalled upload times out, the reservation frees and an honest writer is admitted (202)');
 });
 
 // --- POST /v1/logs: validation ----------------------------------------------

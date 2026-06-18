@@ -399,7 +399,7 @@ test('empty WAL: status() starts clean, drains to caughtUp without inserts; boot
     intervalMs: 5,
     walOps: wal.ops,
   });
-  assert.deepEqual(flusher.status(), { running: false, caughtUp: false, lastError: null, flushedTotal: 0 });
+  assert.deepEqual(flusher.status(), { running: false, caughtUp: false, lastError: null, flushedTotal: 0, stalled: false });
   try {
     flusher.start();
     assert.equal(flusher.status().running, true);
@@ -455,4 +455,162 @@ test('start() issued during a pending stop() keeps the loop alive (not a silent 
   } finally {
     await flusher.stop();
   }
+});
+
+test('lastError clears after a transient failure recovers (no phantom storage failure latched)', async () => {
+  // One insert fails (transient blip), the retry of the SAME batch succeeds. After
+  // recovery lastError must be null so /healthz does not report a permanent
+  // storage failure while caughtUp:true + flushedTotal>0 say it fully recovered.
+  const docs = [makeDoc(1)];
+  const wal = makeWal([{ at: { segmentSeq: 0, offset: 0 }, docs, next: { segmentSeq: 1, offset: 120 } }]);
+  const coll = makeCollection((call, n) => {
+    if (n === 1) throw new Error('ECONNREFUSED transient');
+  });
+  const flusher = createFlusher({
+    walDir: WAL_DIR,
+    getCollection: () => coll,
+    batchSize: 100,
+    intervalMs: 5,
+    walOps: wal.ops,
+  });
+  try {
+    flusher.start();
+    // First the blip latches lastError...
+    await waitFor(() => flusher.status().lastError !== null, { label: 'lastError set on blip' });
+    assert.match(flusher.status().lastError, /ECONNREFUSED transient/);
+    // ...then the retry succeeds, the backlog drains, and the latch must clear.
+    await waitFor(() => wal.saved.length === 1, { timeoutMs: 10_000, label: 'retry succeeded' });
+    await waitFor(() => flusher.status().caughtUp === true, { label: 'caught up after recovery' });
+    assert.equal(flusher.status().flushedTotal, 1);
+    assert.equal(
+      flusher.status().lastError,
+      null,
+      'lastError must clear after a successful cycle so healthz stops reporting a phantom failure',
+    );
+  } finally {
+    await flusher.stop();
+  }
+});
+
+test('idle sleep timer is unref\'d so an un-stopped flusher never pins the event loop', async () => {
+  // Mirrors src/wal/writer.js (timer.unref()): a flusher idling between polls must
+  // not keep Node alive on its own. We spy on setTimeout to capture the handles the
+  // loop creates and assert unref() was called on the one used for the idle sleep.
+  const realSetTimeout = global.setTimeout;
+  const timers = [];
+  global.setTimeout = (...args) => {
+    const t = realSetTimeout(...args);
+    let unrefCalled = false;
+    const realUnref = typeof t?.unref === 'function' ? t.unref.bind(t) : null;
+    if (realUnref) {
+      t.unref = () => {
+        unrefCalled = true;
+        return realUnref();
+      };
+    }
+    const rec = { get unrefCalled() { return unrefCalled; }, hasUnref: !!realUnref };
+    timers.push(rec);
+    return t;
+  };
+  // Empty WAL so the loop reaches `await sleep(intervalMs)` immediately and idles.
+  const wal = makeWal([], { segmentSeq: 0, offset: 0 });
+  const coll = makeCollection();
+  const flusher = createFlusher({
+    walDir: WAL_DIR,
+    getCollection: () => coll,
+    batchSize: 100,
+    intervalMs: 60_000, // long idle: if not unref'd, this handle pins the loop
+    walOps: wal.ops,
+  });
+  try {
+    flusher.start();
+    await waitFor(() => flusher.status().caughtUp === true, { label: 'idle on empty wal' });
+    // Give the loop a moment to enter sleep(intervalMs).
+    await new Promise((r) => realSetTimeout(r, 20));
+    const sleepTimers = timers.filter((t) => t.hasUnref);
+    assert.ok(sleepTimers.length > 0, 'flusher created at least one timer');
+    assert.ok(
+      sleepTimers.some((t) => t.unrefCalled),
+      'the idle sleep() timer must be unref\'d (mirrors writer.js) so it does not pin the event loop',
+    );
+  } finally {
+    global.setTimeout = realSetTimeout;
+    await flusher.stop();
+  }
+});
+
+test('persistent non-11000 insert failure surfaces a distinct stalled signal (poison-pill wedge)', async () => {
+  // A single document that fails forever with a non-11000 code re-throws, so the
+  // checkpoint never advances and the same batch is retried forever. healthErrorCategory
+  // collapses lastError into a transient-looking category, so without a separate signal
+  // an operator cannot tell a momentary blip from a permanently wedged pipeline. After
+  // a run of identical failures on the same checkpoint, status().stalled must flip true.
+  const wal = makeWal([{ at: { segmentSeq: 0, offset: 0 }, docs: [makeDoc(1), makeDoc(2)], next: { segmentSeq: 0, offset: 180 } }]);
+  const coll = makeCollection(() => {
+    const err = new Error('document failed validation');
+    err.code = 121;
+    err.writeErrors = [{ code: 121, index: 0 }];
+    throw err;
+  });
+  const flusher = createFlusher({
+    walDir: WAL_DIR,
+    getCollection: () => coll,
+    batchSize: 100,
+    intervalMs: 5,
+    walOps: wal.ops,
+  });
+  try {
+    flusher.start();
+    await waitFor(() => flusher.status().stalled === true, { timeoutMs: 30_000, label: 'stalled flips true on a wedged batch' });
+    // The checkpoint never advanced and the batch was retried many times.
+    assert.equal(wal.saved.length, 0, 'checkpoint never advances past the poison batch');
+    assert.ok(coll.calls.length >= 3, 'poison batch retried repeatedly');
+    assert.equal(flusher.status().flushedTotal, 0);
+    // lastError still carries the underlying message; stalled is the distinct signal.
+    assert.match(flusher.status().lastError, /failed validation/);
+  } finally {
+    await flusher.stop();
+  }
+});
+
+test('a transient (recovering) failure does NOT set stalled', async () => {
+  // One blip then success: stalled must never flip true, and must read false after recovery.
+  const wal = makeWal([{ at: { segmentSeq: 0, offset: 0 }, docs: [makeDoc(1)], next: { segmentSeq: 1, offset: 120 } }]);
+  const coll = makeCollection((call, n) => {
+    if (n === 1) throw new Error('transient reset');
+  });
+  const flusher = createFlusher({
+    walDir: WAL_DIR,
+    getCollection: () => coll,
+    batchSize: 100,
+    intervalMs: 5,
+    walOps: wal.ops,
+  });
+  try {
+    flusher.start();
+    await waitFor(() => wal.saved.length === 1, { timeoutMs: 10_000, label: 'recovered' });
+    await waitFor(() => flusher.status().caughtUp === true, { label: 'caught up' });
+    assert.equal(flusher.status().stalled, false, 'a recovered transient blip must not be reported as stalled');
+  } finally {
+    await flusher.stop();
+  }
+});
+
+test('stalled is part of the initial status() shape and starts false', async () => {
+  const wal = makeWal([], { segmentSeq: 0, offset: 0 });
+  const coll = makeCollection();
+  const flusher = createFlusher({
+    walDir: WAL_DIR,
+    getCollection: () => coll,
+    batchSize: 100,
+    intervalMs: 5,
+    walOps: wal.ops,
+  });
+  assert.deepEqual(flusher.status(), {
+    running: false,
+    caughtUp: false,
+    lastError: null,
+    flushedTotal: 0,
+    stalled: false,
+  });
 });

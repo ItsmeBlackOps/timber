@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { presetRange, PRESETS } from "@/lib/time";
 
 export interface TimeRange {
@@ -34,6 +35,21 @@ function localInputToIso(local: string): string | undefined {
   return d.toISOString();
 }
 
+/**
+ * Which preset id (if any) the current window length corresponds to, for
+ * highlighting. Mirrors the Stats route (stats.tsx) so both surfaces agree on
+ * what "active" means: a preset is active when the window span matches its
+ * duration within a 1s tolerance (presets emit to=now, so the span is exact
+ * the moment a preset round-trips back through props).
+ */
+function activePresetId(from: string | undefined, to: string | undefined): string | null {
+  if (!from || !to) return null;
+  const span = new Date(to).getTime() - new Date(from).getTime();
+  if (!Number.isFinite(span)) return null;
+  const hit = PRESETS.find((p) => Math.abs(p.ms - span) <= 1000);
+  return hit ? hit.id : null;
+}
+
 const presetBtn: React.CSSProperties = {
   padding: "4px 10px",
   borderRadius: 6,
@@ -43,6 +59,13 @@ const presetBtn: React.CSSProperties = {
   background: "var(--tb-surface)",
   color: "var(--tb-text)",
 };
+
+/** Active-preset emphasis — same accent treatment as the Stats route. */
+function activeStyle(active: boolean): React.CSSProperties {
+  return active
+    ? { background: "var(--tb-acc)", color: "#fff", borderColor: "var(--tb-acc)" }
+    : {};
+}
 
 const customInput: React.CSSProperties = {
   height: 30,
@@ -54,15 +77,67 @@ const customInput: React.CSSProperties = {
   fontSize: 12,
 };
 
+const invalidInput: React.CSSProperties = {
+  borderColor: "var(--tb-error)",
+};
+
+const errorText: React.CSSProperties = {
+  fontSize: 11,
+  color: "var(--tb-error)",
+};
+
+type FieldError = { field: "from" | "to"; message: string };
+
 /**
  * Time-range control (contract C-F9 / spec §7). Preset buttons (15m/1h/6h/24h/7d)
- * emit a {from:now-Δ, to:now} window via lib/time.presetRange; the custom
- * from/to datetime fields emit ISO instants, each preserving the other bound.
+ * emit a {from:now-Δ, to:now} window via lib/time.presetRange and mark the
+ * active window with aria-pressed; the custom from/to datetime fields emit ISO
+ * instants, each preserving the other bound.
+ *
+ * A `from > to` edit is rejected locally rather than emitted: the server would
+ * 400 (spec §7), so we surface that inline on the offending control and hold
+ * the user's keystrokes there until they fix it — no inverted window escapes to
+ * the URL/query.
  */
 export function TimeRangePicker({ from, to, onChange }: TimeRangePickerProps) {
+  // Inline validation state for an inverted (from > to) custom edit. While set,
+  // the offending field shows `draft` (what the user typed) instead of the
+  // prop-derived value, so the error and the input agree.
+  const [error, setError] = useState<FieldError | null>(null);
+  const [draft, setDraft] = useState<string>("");
+
+  const activePreset = activePresetId(from, to);
+
   function applyPreset(id: string) {
+    setError(null);
     onChange(presetRange(id, new Date()));
   }
+
+  // Commit a custom edit on `field`. If both bounds are present and the result
+  // would be inverted, reject inline; otherwise clear any error and emit.
+  function editField(field: "from" | "to", localValue: string) {
+    const iso = localInputToIso(localValue);
+    const next: TimeRange = field === "from" ? { from: iso, to } : { from, to: iso };
+
+    if (next.from && next.to) {
+      const lo = new Date(next.from).getTime();
+      const hi = new Date(next.to).getTime();
+      if (Number.isFinite(lo) && Number.isFinite(hi) && lo > hi) {
+        setDraft(localValue);
+        setError({
+          field,
+          message: "Start must be on or before end — adjust the range.",
+        });
+        return;
+      }
+    }
+    setError(null);
+    setDraft("");
+    onChange(next);
+  }
+
+  const fromValue = error?.field === "from" ? draft : isoToLocalInput(from);
+  const toValue = error?.field === "to" ? draft : isoToLocalInput(to);
 
   return (
     <div
@@ -74,8 +149,9 @@ export function TimeRangePicker({ from, to, onChange }: TimeRangePickerProps) {
         <button
           key={p.id}
           type="button"
+          aria-pressed={activePreset === p.id}
           onClick={() => applyPreset(p.id)}
-          style={presetBtn}
+          style={{ ...presetBtn, ...activeStyle(activePreset === p.id) }}
         >
           {p.label}
         </button>
@@ -85,9 +161,10 @@ export function TimeRangePicker({ from, to, onChange }: TimeRangePickerProps) {
         <input
           type="datetime-local"
           aria-label="From"
-          value={isoToLocalInput(from)}
-          onChange={(e) => onChange({ from: localInputToIso(e.target.value), to })}
-          style={customInput}
+          aria-invalid={error?.field === "from" || undefined}
+          value={fromValue}
+          onChange={(e) => editField("from", e.target.value)}
+          style={error?.field === "from" ? { ...customInput, ...invalidInput } : customInput}
         />
       </label>
       <label style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 12, color: "var(--tb-mut)" }}>
@@ -95,11 +172,17 @@ export function TimeRangePicker({ from, to, onChange }: TimeRangePickerProps) {
         <input
           type="datetime-local"
           aria-label="To"
-          value={isoToLocalInput(to)}
-          onChange={(e) => onChange({ from, to: localInputToIso(e.target.value) })}
-          style={customInput}
+          aria-invalid={error?.field === "to" || undefined}
+          value={toValue}
+          onChange={(e) => editField("to", e.target.value)}
+          style={error?.field === "to" ? { ...customInput, ...invalidInput } : customInput}
         />
       </label>
+      {error ? (
+        <span role="alert" style={errorText}>
+          {error.message}
+        </span>
+      ) : null}
     </div>
   );
 }

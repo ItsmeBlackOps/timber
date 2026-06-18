@@ -106,4 +106,87 @@ describe("EventCombobox", () => {
     await user.click(screen.getByText("http.request"));
     expect(onChange).toHaveBeenLastCalledWith("http.request");
   });
+
+  // --- WAI-ARIA combobox/listbox pattern (a11y) ---
+
+  it("associates the input with the listbox via aria-controls", async () => {
+    const user = userEvent.setup();
+    render(<EventCombobox app="api" value="" onChange={() => {}} />);
+    const input = screen.getByRole("combobox", { name: /event/i });
+    await user.click(input);
+    const list = screen.getByRole("listbox");
+    expect(list).toHaveAttribute("id");
+    const listId = list.getAttribute("id");
+    expect(listId).toBeTruthy();
+    expect(input).toHaveAttribute("aria-controls", listId!);
+  });
+
+  it("selects the highlighted option with ArrowDown + Enter", async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    render(<EventCombobox app="api" value="" onChange={onChange} />);
+    const input = screen.getByRole("combobox", { name: /event/i });
+    await user.click(input);
+    // suggestions for "api" sorted: http.error, http.request
+    await user.keyboard("{ArrowDown}{Enter}");
+    expect(onChange).toHaveBeenLastCalledWith("http.error");
+  });
+
+  it("tracks the highlighted option via aria-activedescendant", async () => {
+    const user = userEvent.setup();
+    render(<EventCombobox app="api" value="" onChange={() => {}} />);
+    const input = screen.getByRole("combobox", { name: /event/i });
+    await user.click(input);
+    expect(input).not.toHaveAttribute("aria-activedescendant");
+    await user.keyboard("{ArrowDown}");
+    const active = input.getAttribute("aria-activedescendant");
+    expect(active).toBeTruthy();
+    const list = screen.getByRole("listbox");
+    const firstOption = within(list).getByText("http.error").closest("[role=option]");
+    expect(firstOption).toHaveAttribute("id", active!);
+    expect(firstOption).toHaveAttribute("aria-selected", "true");
+  });
+
+  it("wraps from the last option to the first with ArrowDown", async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    render(<EventCombobox app="api" value="" onChange={onChange} />);
+    const input = screen.getByRole("combobox", { name: /event/i });
+    await user.click(input);
+    // 2 options; down past the end wraps back to the first (http.error).
+    await user.keyboard("{ArrowDown}{ArrowDown}{ArrowDown}{Enter}");
+    expect(onChange).toHaveBeenLastCalledWith("http.error");
+  });
+
+  it("wraps to the last option with ArrowUp from the unhighlighted state", async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    render(<EventCombobox app="api" value="" onChange={onChange} />);
+    const input = screen.getByRole("combobox", { name: /event/i });
+    await user.click(input);
+    await user.keyboard("{ArrowUp}{Enter}");
+    expect(onChange).toHaveBeenLastCalledWith("http.request");
+  });
+
+  it("closes the listbox on Escape without emitting", async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    render(<EventCombobox app="api" value="" onChange={onChange} />);
+    const input = screen.getByRole("combobox", { name: /event/i });
+    await user.click(input);
+    expect(screen.getByRole("listbox")).toBeInTheDocument();
+    await user.keyboard("{ArrowDown}{Escape}");
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("Enter without a highlighted option does not emit a suggestion", async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    render(<EventCombobox app="api" value="" onChange={onChange} />);
+    const input = screen.getByRole("combobox", { name: /event/i });
+    await user.click(input);
+    await user.keyboard("{Enter}");
+    expect(onChange).not.toHaveBeenCalled();
+  });
 });

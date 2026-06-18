@@ -97,6 +97,15 @@ function mockStats(): { lastParams: () => URLSearchParams | null } {
   return { lastParams: () => seen }
 }
 
+/** Make /v1/stats fail with the given HTTP status (auth/storage banner cases). */
+function mockStatsStatus(status: number): void {
+  server.use(
+    http.get('/v1/stats', () =>
+      HttpResponse.json({ error: `status ${status}` }, { status }),
+    ),
+  )
+}
+
 /** Default groupby handler: returns a distinct top-list per `by` dimension. */
 function mockGroupBy(): { bySeen: () => string[] } {
   const seen: string[] = []
@@ -273,5 +282,53 @@ describe('StatsRoute', () => {
     renderStats()
 
     await waitFor(() => expect(gb.bySeen()).toContain('ids.accountId'))
+  })
+
+  it('shows the 401 re-auth Banner when the stats query is unauthorized', async () => {
+    mockStatsStatus(401)
+    mockGroupBy()
+    renderStats()
+
+    // The re-auth Banner copy (C-F9) — not the generic "Could not load stats".
+    expect(await screen.findByText(/unauthorized|read key/i)).toBeInTheDocument()
+    const banner = screen.getByRole('alert')
+    expect(banner).toHaveAttribute('data-kind', '401')
+    expect(screen.queryByText(/could not load stats/i)).not.toBeInTheDocument()
+  })
+
+  it('shows the 503 storage-unavailable Banner when the stats store is down', async () => {
+    mockStatsStatus(503)
+    mockGroupBy()
+    renderStats()
+
+    expect(await screen.findByText(/storage unavailable/i)).toBeInTheDocument()
+    const banner = screen.getByRole('alert')
+    expect(banner).toHaveAttribute('data-kind', '503')
+    expect(screen.queryByText(/could not load stats/i)).not.toBeInTheDocument()
+  })
+
+  it('falls back to the generic error alert for a non-401/503 stats failure', async () => {
+    mockStatsStatus(500)
+    mockGroupBy()
+    renderStats()
+
+    expect(await screen.findByText(/could not load stats/i)).toBeInTheDocument()
+  })
+
+  it('a failed top-by column shows an error state, not a misleading "No data"', async () => {
+    mockStats()
+    // groupby fails for every dimension — the columns must not claim "No data"
+    // (which means "queried fine, nothing matched"); they should signal failure.
+    server.use(
+      http.get('/v1/groupby', () =>
+        HttpResponse.json({ error: 'boom' }, { status: 503 }),
+      ),
+    )
+    renderStats()
+
+    const col = await screen.findByTestId('top-by-app')
+    await waitFor(() => expect(within(col).queryByText(/loading/i)).not.toBeInTheDocument())
+    expect(within(col).queryByText(/^no data$/i)).not.toBeInTheDocument()
+    expect(within(col).getByText(/unavailable|failed|couldn’t|couldn't|error/i)).toBeInTheDocument()
   })
 })

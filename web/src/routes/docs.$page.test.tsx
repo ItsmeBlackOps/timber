@@ -111,6 +111,17 @@ describe("DocsRoute", () => {
     expect(slowLink.getAttribute("href")).toContain("data.latencyMs__gte=300");
   });
 
+  it("documents the data-field cap as the real 64 KB default, not a stale 16 KB", async () => {
+    // The server default is TIMBER_MAX_DATA_KB=64 (src/config.js), and every
+    // other doc (USAGE.md, .env.example, docker-compose) was updated to 64 KB.
+    // The in-app Event Contract page must not understate the cap as 16 KB.
+    renderDocs("/docs/event-contract");
+    await screen.findByRole("heading", { level: 1, name: /event contract/i });
+    expect(screen.getByText(/TIMBER_MAX_DATA_KB/)).toBeInTheDocument();
+    expect(screen.getByText(/64\s*KB/)).toBeInTheDocument();
+    expect(screen.queryByText(/16\s*KB/)).not.toBeInTheDocument();
+  });
+
   it("copies a code snippet via its CodeBlock copy button", async () => {
     // setup() first; userEvent installs its own clipboard stub, so override after.
     const user = userEvent.setup();

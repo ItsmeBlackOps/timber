@@ -13,6 +13,7 @@
 import { useMemo } from 'react'
 import { useNavigate, useSearch } from '@tanstack/react-router'
 
+import { Banner } from '@/components/Banner'
 import { MetricCards } from '@/components/MetricCards'
 import { StatChart } from '@/components/StatChart'
 import type { StatChartKind } from '@/components/StatChart'
@@ -20,6 +21,7 @@ import { useGroupBy, useStats } from '@/hooks'
 import type { Filters } from '@/lib/filters'
 import { loadSettings } from '@/lib/settings'
 import { PRESETS, presetRange } from '@/lib/time'
+import { ApiError } from '@/lib/types'
 
 type Group = 'hour' | 'day'
 
@@ -94,7 +96,7 @@ function TopByColumn({
   by: string
   filters: Filters
 }) {
-  const { data, isLoading } = useGroupBy(by, filters, { limit: 5 })
+  const { data, isLoading, isError } = useGroupBy(by, filters, { limit: 5 })
   const groups = data?.groups ?? []
   const max = groups.reduce((m, g) => Math.max(m, g.count), 0) || 1
 
@@ -123,6 +125,12 @@ function TopByColumn({
       </div>
       {isLoading && groups.length === 0 ? (
         <div style={{ color: 'var(--tb-mut)', fontSize: 13 }}>Loading…</div>
+      ) : isError && groups.length === 0 ? (
+        // Distinguish a failed request from a genuine empty result: "No data"
+        // would falsely imply the query ran and matched nothing.
+        <div role="alert" style={{ color: 'var(--tb-error)', fontSize: 13 }}>
+          Unavailable
+        </div>
       ) : groups.length === 0 ? (
         <div style={{ color: 'var(--tb-mut)', fontSize: 13 }}>No data</div>
       ) : (
@@ -223,6 +231,13 @@ export function StatsRoute() {
 
   const activePreset = activePresetId(from, to)
 
+  // 401/503 are route-agnostic (spec §9): surface the same Banner as Explore so a
+  // user with a bad/expired key (or a downed store) gets a path to fix it instead
+  // of a vague error. Any other failure falls back to the generic alert.
+  const statsErr = statsQuery.error
+  const unauthorized = statsErr instanceof ApiError && statsErr.status === 401
+  const storageDown = statsErr instanceof ApiError && statsErr.status === 503
+
   return (
     <div style={{ padding: 16, display: 'grid', gap: 20 }}>
       {/* Controls: range presets (shared `from`/`to`) + grouping toggle */}
@@ -264,7 +279,14 @@ export function StatsRoute() {
         </div>
       </div>
 
-      {statsQuery.isError ? (
+      {/* 401/503 surface from the stats query error, matching Explore (spec §9).
+          The Settings trigger that resolves a 401 lives in the shell, so no
+          inline action here. Other failures fall back to the generic alert. */}
+      {unauthorized ? (
+        <Banner kind="401" />
+      ) : storageDown ? (
+        <Banner kind="503" />
+      ) : statsQuery.isError ? (
         <div role="alert" style={{ color: 'var(--tb-error)' }}>
           Could not load stats.
         </div>

@@ -1,4 +1,4 @@
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { X } from "lucide-react";
 import { DEFAULTS, loadSettings, saveSettings } from "@/lib/settings";
 import type { Settings } from "@/lib/settings";
@@ -62,8 +62,18 @@ const fieldStyle: React.CSSProperties = {
  * State is seeded from settings each time the dialog opens, so reopening after a
  * cancel shows the persisted values, not the abandoned edits.
  */
+/** Tabbable elements inside the panel, in DOM order (skips disabled/hidden). */
+function focusableEls(panel: HTMLElement): HTMLElement[] {
+  const sel =
+    'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+  return Array.from(panel.querySelectorAll<HTMLElement>(sel)).filter(
+    (el) => !el.hasAttribute("hidden") && el.getAttribute("aria-hidden") !== "true",
+  );
+}
+
 export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
   const ids = useId();
+  const panelRef = useRef<HTMLDivElement>(null);
   const [readKey, setReadKey] = useState("");
   const [apiBaseUrl, setApiBaseUrl] = useState("");
   const [theme, setTheme] = useState<ThemeChoice>("system");
@@ -85,7 +95,51 @@ export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
     setSlowMs(String(s.slowMs));
   }, [open]);
 
+  // Focus management for the modal (WCAG 2.4.3): on open, remember what had
+  // focus and move focus into the dialog; on close, restore it. The Tab-cycle
+  // trap lives in the panel's onKeyDown so focus cannot leave the dialog.
+  useEffect(() => {
+    if (!open) return;
+    const previouslyFocused = document.activeElement as HTMLElement | null;
+    const panel = panelRef.current;
+    if (panel) {
+      const first = focusableEls(panel)[0];
+      (first ?? panel).focus();
+    }
+    return () => {
+      previouslyFocused?.focus?.();
+    };
+  }, [open]);
+
   if (!open) return null;
+
+  function onKeyDown(e: React.KeyboardEvent<HTMLDivElement>) {
+    if (e.key === "Escape") {
+      e.stopPropagation();
+      onClose();
+      return;
+    }
+    if (e.key !== "Tab") return;
+    const panel = panelRef.current;
+    if (!panel) return;
+    const els = focusableEls(panel);
+    if (els.length === 0) {
+      e.preventDefault();
+      return;
+    }
+    const first = els[0];
+    const last = els[els.length - 1];
+    const active = document.activeElement;
+    if (e.shiftKey) {
+      if (active === first || !panel.contains(active)) {
+        e.preventDefault();
+        last.focus();
+      }
+    } else if (active === last || !panel.contains(active)) {
+      e.preventDefault();
+      first.focus();
+    }
+  }
 
   function save() {
     const next: Partial<Settings> = {
@@ -118,10 +172,12 @@ export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
       }}
     >
       <div
+        ref={panelRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
         onClick={(e) => e.stopPropagation()}
+        onKeyDown={onKeyDown}
         style={{
           width: "min(480px, 92vw)",
           maxHeight: "90vh",
@@ -299,7 +355,7 @@ export function SettingsDialog({ open, onClose }: SettingsDialogProps) {
               borderRadius: 6,
               border: "1px solid var(--tb-acc)",
               background: "var(--tb-acc)",
-              color: "#fff",
+              color: "var(--tb-bg)",
               cursor: "pointer",
               fontWeight: 600,
             }}

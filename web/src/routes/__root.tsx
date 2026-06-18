@@ -1,15 +1,20 @@
-import { useState } from "react";
-import { Link, Outlet } from "@tanstack/react-router";
+import { useEffect, useRef, useState } from "react";
+import { Link, Outlet, useNavigate, useSearch } from "@tanstack/react-router";
 import { Settings as SettingsIcon } from "lucide-react";
-import { ThemeToggle } from "@/components/ThemeToggle";
+import { AppSwitcher } from "@/components/AppSwitcher";
 import { HealthDot } from "@/components/HealthDot";
-import type { Health } from "@/lib/types";
+import { SettingsDialog } from "@/components/SettingsDialog";
+import { ThemeToggle } from "@/components/ThemeToggle";
+import { useEvents } from "@/hooks/useEvents";
+import { useHealth } from "@/hooks/useHealth";
+import { loadSettings } from "@/lib/settings";
 
-// Top-bar shell (contracts C-F10 / spec §8.1): brand, primary nav, an
-// AppSwitcher slot, the health dot, theme toggle and a Settings trigger.
-// The AppSwitcher (F6), live health hook (F5/useHealth) and SettingsDialog (F12)
-// are wired in by the integration task (F13); this shell exposes their mount
-// points without importing those not-yet-built modules.
+// Top-bar shell (contracts C-F10 / spec §8.1): brand, primary nav, the
+// AppSwitcher, the live health dot, theme toggle and a Settings trigger.
+// Integration (F13): the AppSwitcher is driven by useEvents() and writes the
+// `app` scope to the URL search (the single source of truth shared with
+// Explore/Stats); the health dot reflects useHealth(); the Settings trigger
+// mounts the real SettingsDialog and auto-opens on first run (no read key).
 
 const navLinkBase: React.CSSProperties = {
   padding: "6px 10px",
@@ -20,10 +25,55 @@ const navLinkBase: React.CSSProperties = {
 };
 
 export function RootShell() {
+  const navigate = useNavigate();
+  // App scope lives in the URL search (shared with Explore's filters). Read it
+  // loosely (strict:false) so the shell works on every route.
+  const search = useSearch({ strict: false }) as Record<string, unknown>;
+  const currentApp =
+    typeof search.app === "string" && search.app !== "" ? search.app : undefined;
+
+  // Live health (C-F8) — polled, no read key required so the dot works pre-auth.
+  const healthQuery = useHealth();
+  // Known apps for the scope selector (C-F8); gated on a read key inside the hook.
+  const eventsQuery = useEvents();
+  const apps = Object.keys(eventsQuery.data?.apps ?? {});
+
   const [settingsOpen, setSettingsOpen] = useState(false);
-  // Live health is injected by F13 via useHealth(); until then the dot shows
-  // the "unknown" state.
-  const health: Health | undefined = undefined;
+  const settingsTriggerRef = useRef<HTMLButtonElement>(null);
+  // First run (spec §8.1): no read key configured -> open Settings so the user
+  // can paste one (otherwise every data hook stays disabled and nothing loads).
+  useEffect(() => {
+    if (loadSettings().readKey === "") setSettingsOpen(true);
+  }, []);
+
+  // The Explore 401 banner (and any other leaf) can ask the shell to open the
+  // Settings dialog by firing a 'timber:open-settings' window event, since the
+  // dialog's open state lives here rather than in those routes.
+  useEffect(() => {
+    const open = () => setSettingsOpen(true);
+    window.addEventListener("timber:open-settings", open);
+    return () => window.removeEventListener("timber:open-settings", open);
+  }, []);
+
+  function closeSettings() {
+    setSettingsOpen(false);
+    // Return focus to the trigger that opened the dialog (WCAG 2.4.3).
+    settingsTriggerRef.current?.focus();
+  }
+
+  function setApp(app: string | undefined) {
+    navigate({
+      to: ".",
+      search: (prev: Record<string, unknown>) => {
+        if (app === undefined) {
+          const { app: _omit, ...rest } = prev;
+          return rest;
+        }
+        return { ...prev, app };
+      },
+      replace: true,
+    });
+  }
 
   return (
     <div
@@ -125,11 +175,11 @@ export function RootShell() {
             gap: 10,
           }}
         >
-          {/* AppSwitcher mounts here (F6 / wired by F13). */}
-          <div data-testid="app-switcher-slot" aria-label="App switcher" />
-          <HealthDot health={health} />
+          <AppSwitcher apps={apps} value={currentApp} onChange={setApp} />
+          <HealthDot health={healthQuery.data} />
           <ThemeToggle />
           <button
+            ref={settingsTriggerRef}
             type="button"
             aria-label="Settings"
             title="Settings"
@@ -158,37 +208,7 @@ export function RootShell() {
         <Outlet />
       </main>
 
-      {/* SettingsDialog (F12) replaces this placeholder via F13. Kept minimal so
-          the trigger is functional in isolation without importing that module. */}
-      {settingsOpen ? (
-        <div
-          role="dialog"
-          aria-label="Settings"
-          style={{
-            position: "fixed",
-            inset: 0,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            background: "color-mix(in srgb, var(--tb-bg) 70%, transparent)",
-          }}
-          onClick={() => setSettingsOpen(false)}
-        >
-          <div
-            onClick={(e) => e.stopPropagation()}
-            style={{
-              padding: 20,
-              borderRadius: 10,
-              border: "1px solid var(--tb-border)",
-              background: "var(--tb-surface)",
-              color: "var(--tb-text)",
-              maxWidth: 420,
-            }}
-          >
-            <p style={{ margin: 0 }}>Settings dialog loads here.</p>
-          </div>
-        </div>
-      ) : null}
+      <SettingsDialog open={settingsOpen} onClose={closeSettings} />
     </div>
   );
 }

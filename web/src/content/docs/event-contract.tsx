@@ -53,8 +53,9 @@ function Body() {
           [
             <Code key="d">data</Code>,
             <span key="r">
-              optional object, any JSON, ≤ 16 KB serialized. Oversize is stored
-              as <Code>{`{_truncated:true, _originalBytes:n, _head:"…"}`}</Code>.
+              optional object, any JSON, ≤ <Code>TIMBER_MAX_DATA_KB</Code>{" "}
+              serialized (default 64 KB). Oversize is stored as{" "}
+              <Code>{`{_truncated:true, _originalBytes:n, _head:"…"}`}</Code>.
             </span>,
           ],
         ]}

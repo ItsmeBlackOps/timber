@@ -77,3 +77,74 @@ describe("saveSettings", () => {
     window.removeEventListener("timber:settings", handler);
   });
 });
+
+// Identity + caching contract: loadSettings() is on the render hot path of the
+// Explore/Stats routes and every data hook (via hooks/_shared.ts). It must hand
+// back a referentially stable snapshot between actual changes and must not
+// re-parse JSON on every call — otherwise downstream useMemo/useCallback caches
+// (e.g. explore.tsx viewCfg → facetDims → onApplyLens) never hit.
+describe("loadSettings caching / identity", () => {
+  it("returns the same object reference across calls when storage is unchanged (empty)", () => {
+    const a = loadSettings();
+    const b = loadSettings();
+    expect(b).toBe(a);
+    expect(b.userKeys).toBe(a.userKeys);
+  });
+
+  it("returns the same object reference across calls when storage is unchanged (stored partial)", () => {
+    localStorage.setItem(KEY, JSON.stringify({ readKey: "abc" }));
+    const a = loadSettings();
+    const b = loadSettings();
+    expect(b).toBe(a);
+  });
+
+  it("keeps a stable userKeys array reference even when userKeys is persisted", () => {
+    localStorage.setItem(
+      KEY,
+      JSON.stringify({ userKeys: ["sessionId", "userId"] }),
+    );
+    const a = loadSettings();
+    const b = loadSettings();
+    expect(a.userKeys).toEqual(["sessionId", "userId"]);
+    // The bug: JSON.parse minted a fresh array each call, so a.userKeys !== b.userKeys.
+    expect(b.userKeys).toBe(a.userKeys);
+  });
+
+  it("does not re-parse storage on a cache hit", () => {
+    localStorage.setItem(KEY, JSON.stringify({ readKey: "abc" }));
+    loadSettings(); // prime the cache
+    const parseSpy = vi.spyOn(JSON, "parse");
+    loadSettings();
+    loadSettings();
+    expect(parseSpy).not.toHaveBeenCalled();
+    parseSpy.mockRestore();
+  });
+
+  it("returns a fresh snapshot (new reference + new value) after saveSettings", () => {
+    const before = loadSettings();
+    const saved = saveSettings({ readKey: "k2" });
+    const after = loadSettings();
+    expect(after).not.toBe(before);
+    expect(after.readKey).toBe("k2");
+    expect(after).toEqual(saved);
+  });
+
+  it("reflects a value written directly to localStorage (cross-tab storage change)", () => {
+    const before = loadSettings();
+    expect(before.readKey).toBe("");
+    localStorage.setItem(KEY, JSON.stringify({ readKey: "other-tab" }));
+    const after = loadSettings();
+    expect(after).not.toBe(before);
+    expect(after.readKey).toBe("other-tab");
+  });
+
+  it("reflects clearing localStorage back to DEFAULTS with a new reference", () => {
+    localStorage.setItem(KEY, JSON.stringify({ readKey: "abc" }));
+    const stored = loadSettings();
+    expect(stored.readKey).toBe("abc");
+    localStorage.clear();
+    const cleared = loadSettings();
+    expect(cleared).not.toBe(stored);
+    expect(cleared).toEqual(DEFAULTS);
+  });
+});

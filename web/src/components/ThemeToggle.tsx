@@ -14,9 +14,13 @@ export function ThemeToggle() {
     resolveTheme(loadSettings().theme),
   );
 
-  // Apply the persisted theme to the document on first mount.
+  // Apply the persisted theme to <html data-theme> on first mount. This is a
+  // pure DOM side effect: the useState initializer above already resolved the
+  // same concrete theme into state, so we must not call setTheme here (a
+  // same-value setState only forces a redundant render — see
+  // react-hooks/set-state-in-effect).
   useEffect(() => {
-    setTheme(applyTheme(loadSettings().theme));
+    applyTheme(loadSettings().theme);
   }, []);
 
   function toggle() {

@@ -8,7 +8,7 @@
 //
 // initialRect gives the virtualizer a viewport size without a real layout pass,
 // which also makes it deterministic under jsdom in tests.
-import { useCallback, useRef } from "react";
+import { memo, useCallback, useRef } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 
 import { LogRow } from "@/components/LogRow";
@@ -26,7 +26,7 @@ export interface ResultsTableProps {
 const ROW_HEIGHT = 38;
 const VIEWPORT_HEIGHT = 520;
 
-export function ResultsTable({
+function ResultsTableImpl({
   items,
   onRowClick,
   selectedId,
@@ -35,6 +35,25 @@ export function ResultsTable({
   loading,
 }: ResultsTableProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
+
+  // Per-row onClick must be REFERENCE-STABLE across renders or it defeats the
+  // React.memo on LogRow (a fresh `() => onRowClick(id)` per render would force
+  // every visible row to re-render on each parent tick — e.g. the 2s live-tail
+  // poll). Stash the latest onRowClick in a ref and hand each id a cached
+  // closure that reads it, so the closures stay identity-stable while always
+  // dispatching to the current callback.
+  const onRowClickRef = useRef(onRowClick);
+  onRowClickRef.current = onRowClick;
+  const clickCacheRef = useRef<Map<string, () => void>>(new Map());
+  const getRowClick = useCallback((id: string) => {
+    const cache = clickCacheRef.current;
+    let handler = cache.get(id);
+    if (!handler) {
+      handler = () => onRowClickRef.current(id);
+      cache.set(id, handler);
+    }
+    return handler;
+  }, []);
 
   const virtualizer = useVirtualizer({
     count: items.length,
@@ -161,7 +180,7 @@ export function ResultsTable({
               <LogRow
                 doc={doc}
                 selected={doc._id === selectedId}
-                onClick={() => onRowClick(doc._id)}
+                onClick={getRowClick(doc._id)}
               />
             </div>
           );
@@ -182,3 +201,9 @@ export function ResultsTable({
     </div>
   );
 }
+
+// Memoized: ExploreRoute re-renders often (live-tail tick, facet churn). With a
+// stable `items` reference the table — and its virtualizer — skips the whole
+// reconcile. When `items` does change identity React.memo falls through to a
+// normal render, so there's no correctness cost, only an upside.
+export const ResultsTable = memo(ResultsTableImpl);

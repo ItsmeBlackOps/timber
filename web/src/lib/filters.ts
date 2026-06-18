@@ -144,3 +144,41 @@ export function paramsToFilters(p: URLSearchParams): Filters {
 
   return f
 }
+
+// ---- TanStack Router search (de)serialization --------------------------------
+// The console treats every search value as an OPAQUE STRING (the URL is the
+// shareable saved search — spec §3/§7). TanStack Router's DEFAULT parser
+// JSON-coerces each value, which silently drops `q=null` and mangles
+// JSON-shaped values (`q={"a":1}` -> "[object Object]"). These two functions
+// replace that default so a hand-crafted / bookmarked URL round-trips verbatim:
+// values stay strings, and repeated keys (multiple `ids.x` / `data.y`) collapse
+// into arrays so paramsToFilters sees every row.
+
+/** A plain search object as TanStack Router stores it (string | string[]). */
+export type SearchRecord = Record<string, string | string[]>
+
+/** Parse a raw `?...` search string into an opaque-string search object. */
+export function parseSearch(searchStr: string): SearchRecord {
+  const p = new URLSearchParams(searchStr)
+  const out: SearchRecord = {}
+  for (const key of new Set(p.keys())) {
+    const all = p.getAll(key)
+    out[key] = all.length > 1 ? all : all[0]
+  }
+  return out
+}
+
+/** Serialize a search object back into a `?...` string, preserving strings. */
+export function stringifySearch(search: Record<string, unknown>): string {
+  const p = new URLSearchParams()
+  for (const [key, value] of Object.entries(search)) {
+    if (value === undefined || value === null) continue
+    if (Array.isArray(value)) {
+      for (const v of value) if (v !== undefined && v !== null) p.append(key, String(v))
+    } else {
+      p.append(key, String(value))
+    }
+  }
+  const str = p.toString()
+  return str ? `?${str}` : ''
+}
