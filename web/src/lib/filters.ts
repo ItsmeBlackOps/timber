@@ -27,6 +27,7 @@ export interface DataFilter {
 /** The complete, URL-serializable filter state for the logs query. */
 export interface Filters {
   app?: string
+  project?: string
   env?: string
   levels: Level[]
   event?: string
@@ -65,6 +66,7 @@ export function filtersToParams(f: Filters): URLSearchParams {
   const p = new URLSearchParams()
 
   appendScalar(p, 'app', f.app)
+  appendScalar(p, 'project', f.project)
   appendScalar(p, 'env', f.env)
   appendScalar(p, 'event', f.event)
   appendScalar(p, 'q', f.q)
@@ -109,6 +111,8 @@ export function paramsToFilters(p: URLSearchParams): Filters {
   for (const [name, value] of p.entries()) {
     if (name === 'app') {
       f.app = value
+    } else if (name === 'project') {
+      f.project = value
     } else if (name === 'env') {
       f.env = value
     } else if (name === 'event') {

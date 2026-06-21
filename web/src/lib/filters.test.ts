@@ -393,3 +393,12 @@ describe('round-trip property: paramsToFilters(filtersToParams(f)) ~= f', () => 
     expectEquivalent(f, paramsToFilters(filtersToParams(f)))
   })
 })
+
+test('project round-trips through params', () => {
+  const f = paramsToFilters(new URLSearchParams('project=acme&app=api'))
+  expect(f.project).toBe('acme')
+  expect(filtersToParams(f).get('project')).toBe('acme')
+})
+test('no project -> param omitted', () => {
+  expect(filtersToParams(paramsToFilters(new URLSearchParams(''))).has('project')).toBe(false)
+})
