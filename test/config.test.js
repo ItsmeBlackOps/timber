@@ -286,3 +286,20 @@ test('maxDataBytes: blank/whitespace TIMBER_MAX_DATA_KB falls back to the defaul
   quietStderr(t);
   assert.equal(loadConfig({ TIMBER_MAX_DATA_KB: '  ' }).maxDataBytes, 65_536);
 });
+
+test('projects + jobs config: defaults', (t) => {
+  quietStderr(t);
+  const cfg = loadConfig({});
+  assert.equal(cfg.mongoProjectsCollectionName, 'projects');
+  assert.deepEqual(cfg.jobsEventPrefixes, ['cron.']);
+});
+
+test('projects + jobs config: overrides (CSV prefixes trimmed)', (t) => {
+  quietStderr(t);
+  const cfg = loadConfig({
+    TIMBER_PROJECTS_COLLECTION: 'proj',
+    TIMBER_JOBS_EVENT_PREFIX: 'cron., job. , task.',
+  });
+  assert.equal(cfg.mongoProjectsCollectionName, 'proj');
+  assert.deepEqual(cfg.jobsEventPrefixes, ['cron.', 'job.', 'task.']);
+});

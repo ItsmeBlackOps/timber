@@ -60,6 +60,13 @@ function clampedKbToBytes(env, name, defKb, loKb, hiKb) {
   return clampedInt(env, name, defKb, loKb, hiKb) * 1024;
 }
 
+function csvEnv(env, name, def) {
+  const s = rawEnv(env, name) ?? def;
+  return Object.freeze(
+    s.split(',').map((x) => x.trim()).filter((x) => x.length > 0),
+  );
+}
+
 function warn(message) {
   process.stderr.write(`[timber] warning: ${message}\n`);
 }
@@ -108,6 +115,7 @@ export function loadConfig(env = process.env) {
     mongodbUri: rawEnv(env, 'MONGODB_URI') ?? null,
     mongoDbName: strEnv(env, 'TIMBER_DB', 'appLogs'),
     mongoCollectionName: strEnv(env, 'TIMBER_COLLECTION', 'events'),
+    mongoProjectsCollectionName: strEnv(env, 'TIMBER_PROJECTS_COLLECTION', 'projects'),
     keys: parseKeys(env),
     walDir: strEnv(env, 'TIMBER_WAL_DIR', './wal-data'),
     walBudgetBytes: mbEnvToBytes(env, 'TIMBER_WAL_BUDGET_MB', 2048),
@@ -129,6 +137,7 @@ export function loadConfig(env = process.env) {
     // parse-time guard (src/query/logs.js) deliberately does not classify, and
     // for plain unindexed COLLSCANs. The 5000ms default below is safe.
     queryMaxTimeMs: clampedInt(env, 'TIMBER_QUERY_MAX_TIME_MS', 5000, 0, 600000),
+    jobsEventPrefixes: csvEnv(env, 'TIMBER_JOBS_EVENT_PREFIX', 'cron.'),
     // HTTP socket hardening (applied to the node:http server in buildApp). Node's
     // defaults are dangerously slack for an ingest endpoint that reserves a
     // request's declared content-length in the WAL budget the instant it commits
