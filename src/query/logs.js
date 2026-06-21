@@ -1,6 +1,7 @@
 // Contract C8: GET /v1/logs — URL params → Mongo filter, keyset pagination.
 import { LEVELS } from '../validate.js';
 import { encodeCursor, decodeCursor } from './cursor.js';
+import { appScope } from './scope.js';
 
 const MAX_Q_CHARS = 256;
 const NUMERIC_RE = /^-?\d+(\.\d+)?$/;
@@ -310,10 +311,13 @@ function serializeValue(v) {
   return v;
 }
 
-export async function runLogsQuery(collection, { filter, limit }, { maxTimeMS } = {}) {
+export async function runLogsQuery(collection, { filter, limit, apps }, { maxTimeMS } = {}) {
+  // Preserve the exact filter reference (and today's behavior) when no project
+  // scope is active; only allocate a scoped clause when `apps` is present.
+  const scoped = apps === undefined ? filter : { ...filter, ...appScope(filter.app, apps) };
   // limit+1 over-fetch: the extra row only signals that another page exists.
   let cursor = collection
-    .find(filter)
+    .find(scoped)
     .sort({ receivedAt: -1, _id: -1 })
     .limit(limit + 1);
   // Server-side execution cap (PRD security): bounds both a catastrophic-

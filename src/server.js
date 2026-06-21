@@ -21,7 +21,7 @@ import { loadCheckpoint } from './wal/checkpoint.js';
 import { backlogBytes } from './wal/reader.js';
 import { createFlusher } from './flusher.js';
 import { connectMongo, ensureIndexes } from './mongo.js';
-import { ensureProjectIndexes, listProjects, createProject, updateProject, deleteProject, validateProjectInput } from './projects.js';
+import { ensureProjectIndexes, listProjects, createProject, updateProject, deleteProject, validateProjectInput, resolveProjectApps } from './projects.js';
 import { parseLogsQuery, runLogsQuery } from './query/logs.js';
 import { parseStatsQuery, runStats } from './query/stats.js';
 import { parseEventsQuery, runEvents } from './query/events.js';
@@ -93,6 +93,21 @@ export function buildApp(config, deps) {
       return null;
     }
     return collection;
+  }
+
+  // Pull an optional ?project=<slug> out of the query, resolve it to member apps,
+  // and remove it so the per-endpoint parsers (which 400 on unknown params) never
+  // see it. Returns { ok, apps }: apps is undefined (no scope) or an array, or the
+  // call already sent 400 (unknown project) / 503 (no projects storage).
+  async function resolveScope(url, res) {
+    const slug = url.searchParams.get('project');
+    if (slug === null) return { ok: true, apps: undefined };
+    url.searchParams.delete('project');
+    const pc = getProjectsCollection?.();
+    if (!pc) { sendError(res, 503, 'storage unavailable'); return { ok: false }; }
+    const apps = await resolveProjectApps(pc, slug, { maxTimeMS: config.queryMaxTimeMs });
+    if (apps === null) { sendError(res, 400, `unknown project "${slug}"`); return { ok: false }; }
+    return { ok: true, apps };
   }
 
   // Project-registry routes. Per design, a read key suffices for list AND mutate
@@ -251,40 +266,55 @@ export function buildApp(config, deps) {
   router.add('GET', '/v1/logs', async (req, res, url) => {
     const collection = readGate(req, res);
     if (!collection) return;
+    const scope = await resolveScope(url, res);
+    if (!scope.ok) return;
     const parsed = parseLogsQuery(url.searchParams);
     if (!parsed.ok) return sendError(res, 400, parsed.error);
+    parsed.value.apps = scope.apps;
     sendJson(res, 200, await runLogsQuery(collection, parsed.value, { maxTimeMS: config.queryMaxTimeMs }));
   });
 
   router.add('GET', '/v1/stats', async (req, res, url) => {
     const collection = readGate(req, res);
     if (!collection) return;
+    const scope = await resolveScope(url, res);
+    if (!scope.ok) return;
     const parsed = parseStatsQuery(url.searchParams);
     if (!parsed.ok) return sendError(res, 400, parsed.error);
+    parsed.value.apps = scope.apps;
     sendJson(res, 200, await runStats(collection, parsed.value, { maxTimeMS: config.queryMaxTimeMs }));
   });
 
   router.add('GET', '/v1/events', async (req, res, url) => {
     const collection = readGate(req, res);
     if (!collection) return;
+    const scope = await resolveScope(url, res);
+    if (!scope.ok) return;
     const parsed = parseEventsQuery(url.searchParams);
     if (!parsed.ok) return sendError(res, 400, parsed.error);
+    parsed.value.apps = scope.apps;
     sendJson(res, 200, await runEvents(collection, parsed.value, { maxTimeMS: config.queryMaxTimeMs }));
   });
 
   router.add('GET', '/v1/facets', async (req, res, url) => {
     const collection = readGate(req, res);
     if (!collection) return;
+    const scope = await resolveScope(url, res);
+    if (!scope.ok) return;
     const parsed = parseFacetsQuery(url.searchParams);
     if (!parsed.ok) return sendError(res, 400, parsed.error);
+    parsed.value.apps = scope.apps;
     sendJson(res, 200, await runFacets(collection, parsed.value, { maxTimeMS: config.queryMaxTimeMs }));
   });
 
   router.add('GET', '/v1/groupby', async (req, res, url) => {
     const collection = readGate(req, res);
     if (!collection) return;
+    const scope = await resolveScope(url, res);
+    if (!scope.ok) return;
     const parsed = parseGroupByQuery(url.searchParams);
     if (!parsed.ok) return sendError(res, 400, parsed.error);
+    parsed.value.apps = scope.apps;
     sendJson(res, 200, await runGroupBy(collection, parsed.value, { maxTimeMS: config.queryMaxTimeMs }));
   });
 

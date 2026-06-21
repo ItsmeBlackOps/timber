@@ -3,6 +3,8 @@
 // by" key picker without a fixed schema. Mirrors the parse*/build*/run* shape of
 // src/query/stats.js.
 
+import { appScope } from './scope.js';
+
 const KNOWN_PARAMS = new Set(['app', 'from', 'to']);
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -53,12 +55,12 @@ const keyMap = (field) => ({
   $map: { input: { $objectToArray: { $ifNull: [field, {}] } }, as: 'k', in: '$$k.k' },
 });
 
-export function buildFacetsPipeline({ from, to, app }) {
+export function buildFacetsPipeline({ from, to, app, apps }) {
   return [
     {
       $match: {
         receivedAt: { $gte: from, $lt: to },
-        ...(app && { app }),
+        ...appScope(app, apps),
       },
     },
     { $project: { ik: keyMap('$ids'), dk: keyMap('$data') } },

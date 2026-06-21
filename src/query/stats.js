@@ -1,6 +1,8 @@
 // GET /v1/stats backend (contract C9): parse params, build the aggregation
 // pipeline ($dateTrunc buckets + §5.3 convention rollups), post-process buckets.
 
+import { appScope } from './scope.js';
+
 const GROUPS = ['hour', 'day'];
 const KNOWN_PARAMS = new Set(['group', 'from', 'to', 'app', 'event']);
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -62,12 +64,12 @@ const toDouble = (input, onMissing) => ({
   $convert: { input, to: 'double', onError: onMissing, onNull: onMissing },
 });
 
-export function buildStatsPipeline({ group, from, to, app, event }) {
+export function buildStatsPipeline({ group, from, to, app, event, apps }) {
   return [
     {
       $match: {
         receivedAt: { $gte: from, $lt: to },
-        ...(app && { app }),
+        ...appScope(app, apps),
         ...(event && { event: { $regex: '^' + escapeRegex(event) } }),
       },
     },

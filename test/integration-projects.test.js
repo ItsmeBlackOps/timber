@@ -75,3 +75,27 @@ test('PATCH/DELETE unknown slug -> 404; bad body -> 400; no key -> 401', async (
   assert.equal((await fetch(`${base}/v1/projects`, { method: 'POST', headers: auth, body: '{bad' })).status, 400);
   assert.equal((await fetch(`${base}/v1/projects`, { method: 'POST', body: JSON.stringify({ name: 'x' }) })).status, 401);
 });
+
+test('project scope: /v1/logs filters to member apps; unknown -> 400', async (t) => {
+  if (!URI) return t.skip('no mongo');
+  const db = client.db('timber_test_projects');
+  const events = db.collection('events');
+  await events.deleteMany({});
+  await events.insertMany([
+    { _id: 'e1', app: 'web', event: 'x', level: 'info', receivedAt: '2026-06-20T00:00:00.000Z' },
+    { _id: 'e2', app: 'api', event: 'x', level: 'info', receivedAt: '2026-06-20T00:00:01.000Z' },
+    { _id: 'e3', app: 'other', event: 'x', level: 'info', receivedAt: '2026-06-20T00:00:02.000Z' },
+  ]);
+  const { slug } = await (await fetch(`${base}/v1/projects`, { method: 'POST', headers: auth, body: JSON.stringify({ name: 'Scoped', apps: ['web', 'api'] }) })).json();
+
+  const r = await (await fetch(`${base}/v1/logs?project=${slug}`, { headers: auth })).json();
+  assert.deepEqual(r.items.map((i) => i.app).sort(), ['api', 'web']);
+
+  const r2 = await (await fetch(`${base}/v1/logs?project=${slug}&app=web`, { headers: auth })).json();
+  assert.deepEqual(r2.items.map((i) => i.app), ['web']);
+
+  const r3 = await (await fetch(`${base}/v1/logs?project=${slug}&app=other`, { headers: auth })).json();
+  assert.equal(r3.items.length, 0);
+
+  assert.equal((await fetch(`${base}/v1/logs?project=nope`, { headers: auth })).status, 400);
+});

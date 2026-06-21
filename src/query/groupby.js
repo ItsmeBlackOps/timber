@@ -4,6 +4,7 @@
 // "errors by user" / "volume by service" bars with an honest remainder.
 
 import { buildLogsFilter } from './logs.js';
+import { appScope } from './scope.js';
 
 // Whitelist of groupable fields. Anchored + restricted to known top-level keys
 // and dotted ids.*/data.* paths whose segments are [\w.-] only — so a `by`
@@ -92,9 +93,9 @@ export function parseGroupByQuery(searchParams) {
   return { ok: true, value };
 }
 
-export function buildGroupByPipeline({ by, filter, limit, like }) {
+export function buildGroupByPipeline({ by, filter, limit, like, apps }) {
   return [
-    { $match: filter },
+    { $match: { ...filter, ...appScope(filter.app, apps) } },
     { $group: { _id: '$' + by, count: { $sum: 1 } } },
     // `like` filters the grouped values themselves (autocomplete on the _id),
     // applied AFTER grouping so it matches distinct values, not raw docs.
