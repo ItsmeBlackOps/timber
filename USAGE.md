@@ -360,6 +360,74 @@ curl -s "$TIMBER_URL/v1/groupby?by=data.model&like=opus&event=ai." \
 
 ---
 
+## Projects, `GET/POST/PATCH/DELETE /v1/projects` (read or write key)
+
+A **project** groups one or more services (the per-key `app`) under a name, so the
+Console can scope every view to a set of services. Projects are metadata only:
+they do not change events and apply retroactively to existing logs. Any valid key
+may list and edit them.
+
+```bash
+# list
+curl -s "$TIMBER_URL/v1/projects" -H "Authorization: Bearer $TIMBER_KEY"
+# create (returns {slug,name,apps})
+curl -s -X POST "$TIMBER_URL/v1/projects" -H "Authorization: Bearer $TIMBER_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Acme Platform","apps":["web","api","worker"]}'
+# edit members (slug travels in the body)
+curl -s -X PATCH "$TIMBER_URL/v1/projects" -H "Authorization: Bearer $TIMBER_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"slug":"acme-platform","apps":["web","api"]}'
+# delete (slug in the query string)
+curl -s -X DELETE "$TIMBER_URL/v1/projects?slug=acme-platform" -H "Authorization: Bearer $TIMBER_KEY"
+```
+
+| field | rules |
+|---|---|
+| `name` | required string, trimmed, 1..80 chars, unique (case-insensitive) |
+| `apps` | array of service names, 0..200, each 1..128 chars; duplicates removed |
+
+`slug` is derived from `name` at creation, is unique, and never changes (so shared
+URLs survive a rename). Errors: `400` bad body, `404` unknown slug, `409`
+duplicate name, `503` storage down.
+
+### Project scope on reads
+
+Add `project=<slug>` to `/v1/logs`, `/v1/stats`, `/v1/events`, `/v1/facets`,
+`/v1/groupby`, or `/v1/jobs` to scope results to that project's services
+(`app $in {...}`). Combine with `app=<one>` to drill into a single member service.
+An unknown slug returns `400`.
+
+```bash
+curl -s "$TIMBER_URL/v1/logs?project=acme-platform&level=warn,error" \
+  -H "Authorization: Bearer $TIMBER_KEY"
+```
+
+## Jobs, `GET /v1/jobs` (read or write key)
+
+Rolls up scheduled-job events (those whose `event` starts with a prefix in
+`TIMBER_JOBS_EVENT_PREFIX`, default `cron.`) into one row per job over a time
+window (default last 24h). Params: `from`, `to`, `app`, `project`.
+
+```bash
+curl -s "$TIMBER_URL/v1/jobs?project=acme-platform&from=2026-06-20T00:00:00Z" \
+  -H "Authorization: Bearer $TIMBER_KEY"
+```
+
+```json
+{
+  "jobs": [
+    {"name":"cron.nightly-report","lastRunAt":"2026-06-21T03:00:01Z","lastStatus":"ok",
+     "runs":42,"failures":3,"successRate":0.93,"p50Ms":1200,"p95Ms":4800}
+  ],
+  "window": {"from":"2026-06-20T00:00:00Z","to":"2026-06-21T00:00:00Z"}
+}
+```
+
+A run counts as `failed` when its `level` is `error` or `data.status` is one of
+`error`/`failed`/`failure`; duration comes from `data.latencyMs`. Jobs are sorted
+by run count; a job with no numeric duration omits the percentiles.
+
 ## Health — `GET /healthz` (no auth)
 
 ```bash
@@ -459,7 +527,9 @@ secret-looking keys before sending.
 | `TIMBER_FLUSH_INTERVAL_MS` | `200` | flusher idle poll interval |
 | `TIMBER_QUERY_MAX_TIME_MS` | `5000` | server-side `maxTimeMS` cap on read queries (regex/scan guard); `0` disables |
 | `TIMBER_CLUSTER` | `0` | `>0` forks N workers (`node:cluster`), one WAL subdir per worker. Off by default |
-| `WATCHTOWER_POLL_INTERVAL` | `300` | compose only — seconds between Docker Hub checks by the bundled `watchtower` auto-deploy service. Lower = faster rollout, more registry pulls |
+| `WATCHTOWER_POLL_INTERVAL` | `300` | compose only, seconds between Docker Hub checks by the bundled `watchtower` auto-deploy service. Lower = faster rollout, more registry pulls |
+| `TIMBER_PROJECTS_COLLECTION` | `projects` | Mongo collection holding project metadata (name + member services) |
+| `TIMBER_JOBS_EVENT_PREFIX` | `cron.` | comma-separated event-name prefixes treated as jobs by `/v1/jobs` |
 
 ---
 
