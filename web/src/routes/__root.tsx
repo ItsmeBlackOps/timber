@@ -173,6 +173,32 @@ export function RootShell() {
             Explore
           </Link>
           <Link
+            to="/overview"
+            style={navLinkBase}
+            activeProps={{
+              style: {
+                ...navLinkBase,
+                color: "var(--tb-text)",
+                background: "var(--tb-2)",
+              },
+            }}
+          >
+            Overview
+          </Link>
+          <Link
+            to="/jobs"
+            style={navLinkBase}
+            activeProps={{
+              style: {
+                ...navLinkBase,
+                color: "var(--tb-text)",
+                background: "var(--tb-2)",
+              },
+            }}
+          >
+            Jobs
+          </Link>
+          <Link
             to="/stats"
             style={navLinkBase}
             activeProps={{

@@ -84,8 +84,18 @@ const docsRoute = createRoute({
   path: '/docs/$page',
   component: lazyRouteComponent(() => import('@/routes/docs.$page'), 'DocsRoute'),
 })
+const overviewRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/overview',
+  component: lazyRouteComponent(() => import('@/routes/overview'), 'OverviewRoute'),
+})
+const jobsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/jobs',
+  component: lazyRouteComponent(() => import('@/routes/jobs'), 'JobsRoute'),
+})
 
-const routeTree = rootRoute.addChildren([indexRoute, statsRoute, docsRoute])
+const routeTree = rootRoute.addChildren([indexRoute, statsRoute, docsRoute, overviewRoute, jobsRoute])
 
 // Treat every search value as an opaque string. TanStack Router's DEFAULT search
 // (de)serializer JSON-coerces values, which silently drops a bookmarked `q=null`
