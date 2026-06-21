@@ -21,6 +21,7 @@ import { loadCheckpoint } from './wal/checkpoint.js';
 import { backlogBytes } from './wal/reader.js';
 import { createFlusher } from './flusher.js';
 import { connectMongo, ensureIndexes } from './mongo.js';
+import { ensureProjectIndexes, listProjects, createProject, updateProject, deleteProject, validateProjectInput } from './projects.js';
 import { parseLogsQuery, runLogsQuery } from './query/logs.js';
 import { parseStatsQuery, runStats } from './query/stats.js';
 import { parseEventsQuery, runEvents } from './query/events.js';
@@ -58,7 +59,7 @@ function healthErrorCategory(msg) {
 }
 
 export function buildApp(config, deps) {
-  const { keyring, walWriter, flusher, getCollection, now } = deps;
+  const { keyring, walWriter, flusher, getCollection, getProjectsCollection, now } = deps;
   const router = createRouter();
 
   // Admission-time WAL budget accounting. walWriter.totalBytes() only reflects
@@ -312,8 +313,10 @@ export async function main() {
 
   let client = null;
   let collection = null;
+  let projectsCollection = null;
   let stopping = false;
   const getCollection = () => collection;
+  const getProjectsCollection = () => projectsCollection;
 
   const flusher = createFlusher({
     walDir: config.walDir,
@@ -328,6 +331,7 @@ export async function main() {
     walWriter,
     flusher,
     getCollection,
+    getProjectsCollection,
     now: () => new Date(),
   });
 
@@ -350,9 +354,12 @@ export async function main() {
             collectionName: config.mongoCollectionName,
           });
           await ensureIndexes(conn.collection);
+          const projects = conn.client.db(config.mongoDbName).collection(config.mongoProjectsCollectionName);
+          await ensureProjectIndexes(projects);
           client = conn.client;
           collection = conn.collection;
-          log(`mongo connected (db=${config.mongoDbName} collection=${config.mongoCollectionName})`);
+          projectsCollection = projects;
+          log(`mongo connected (db=${config.mongoDbName} collection=${config.mongoCollectionName}, projects=${config.mongoProjectsCollectionName})`);
         } catch (err) {
           log(`mongo connect failed: ${err?.message ?? err} — retrying in 5s`);
           await new Promise((r) => setTimeout(r, 5000));
