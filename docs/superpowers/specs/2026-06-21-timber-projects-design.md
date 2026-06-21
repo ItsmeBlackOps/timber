@@ -1,4 +1,4 @@
-# Timber — Projects & per-project lenses (design)
+# Timber, Projects & per-project lenses (design)
 
 **Date:** 2026-06-21
 **Status:** Approved decisions; pending spec review → implementation plan
@@ -8,7 +8,7 @@
 
 Add a **Project** scope to Timber. A project is a named grouping of existing
 **services** (the per-key `app` value). Selecting a project scopes the whole
-Console — and the six existing lenses — to that project's services, and adds a
+Console, and the six existing lenses, to that project's services, and adds a
 richer **Cron & Jobs** dashboard. Projects are stored server-side and shared
 across everyone using the Console.
 
@@ -23,9 +23,9 @@ projects registry, and the jobs view.
 | Decision | Choice |
 |---|---|
 | What a project is | A **named set of services** (member `app` values). |
-| Where projects live | **Server-side, shared** — a Mongo collection + CRUD API. |
-| Cron & Jobs depth | **Both** — keep the scoped `cron.*` lens **and** add a jobs dashboard backed by a new endpoint. |
-| Who can edit projects | **Any valid key** (`canRead`) — list and mutate. The Console's existing read key can add/edit/delete. |
+| Where projects live | **Server-side, shared**, a Mongo collection + CRUD API. |
+| Cron & Jobs depth | **Both**, keep the scoped `cron.*` lens **and** add a jobs dashboard backed by a new endpoint. |
+| Who can edit projects | **Any valid key** (`canRead`), list and mutate. The Console's existing read key can add/edit/delete. |
 
 ## 3. Background (current state, verified)
 
@@ -63,7 +63,7 @@ New Mongo collection, name from `TIMBER_PROJECTS_COLLECTION` (default
 - `name` is editable (display); `slug` is stable so shared URLs don't break on
   rename.
 
-## 5. Server — Projects CRUD API
+## 5. Server, Projects CRUD API
 
 All gated by `canRead` (per decision). All validated with the rigor of
 `src/validate.js` (explicit shape checks, length/array caps, reject unknown
@@ -71,17 +71,17 @@ top-level keys). Reads honor `queryMaxTimeMs`.
 
 | Method | Path | Body / params | Returns |
 |---|---|---|---|
-| `GET` | `/v1/projects` | — | `{ projects: [{ id, name, slug, apps }] }` |
+| `GET` | `/v1/projects` |, | `{ projects: [{ id, name, slug, apps }] }` |
 | `POST` | `/v1/projects` | `{ name, apps }` | `201 { id, name, slug, apps }` |
 | `PATCH` | `/v1/projects/:id` | `{ name?, apps? }` | `200 { id, name, slug, apps }` |
-| `DELETE` | `/v1/projects/:id` | — | `204` |
+| `DELETE` | `/v1/projects/:id` |, | `204` |
 
 Errors: `400` (bad shape / empty name / dup name / oversize), `401` (no valid
 key), `404` (unknown id), `503` (Mongo unavailable). `slug` is generated from
 `name` (kebab-case, deduped with a numeric suffix if needed). `apps` are stored
-verbatim (free strings — a service may exist before any event from it arrives).
+verbatim (free strings, a service may exist before any event from it arrives).
 
-## 6. Server — project-scoped reads
+## 6. Server, project-scoped reads
 
 Add an optional **`project`** query param to `/v1/logs`, `/v1/stats`,
 `/v1/groupby`, `/v1/facets`, `/v1/events`.
@@ -92,11 +92,11 @@ Add an optional **`project`** query param to `/v1/logs`, `/v1/stats`,
 - **Unknown project** → `400` (`unknown project`).
 - The existing single **`app`** param still works and composes as a
   **drill-down**: with both `project` and `app`, results are `app` *and* `app ∈
-  project.apps` — i.e. the one service, only if it's a member (else empty).
+  project.apps`, i.e. the one service, only if it's a member (else empty).
 - This is the only change to the query files; keyset cursor, TTL, percentiles,
   and `$dateTrunc`/`$facet` aggregations are otherwise untouched.
 
-## 7. Server — Jobs API
+## 7. Server, Jobs API
 
 New `GET /v1/jobs` (`canRead`), project-scoped. Aggregates events whose `name`
 starts with any prefix in `TIMBER_JOBS_EVENT_PREFIX` (default `cron.`) within the
@@ -134,14 +134,14 @@ Returns one row per job `name`:
    from `/v1/events` apps, with free-text add for not-yet-seen services),
    rename, edit members, delete. CRUD via TanStack Query mutations with cache
    invalidation. Editable because `canRead` (the Console's key) is sufficient.
-3. **Project Overview dashboard** (`/overview`, a nav tab — the project's
-   at-a-glance): one card per lens — **Errors** (count + sparkline),
+3. **Project Overview dashboard** (`/overview`, a nav tab, the project's
+   at-a-glance): one card per lens, **Errors** (count + sparkline),
    **AI usage** (calls/tokens/cost), **By user** (top users), **By service**
    (breakdown across the project's services), **Slow operations** (count over
    `slowMs` + slowest), **Cron & Jobs** (job-health summary). Each card deep-links
    into Explore/Stats/Jobs pre-scoped. Reuses existing hooks
    (`useStats`/`useGroupBy`/`useLogs`) and the existing lens definitions.
-4. **Jobs dashboard** (`/jobs`): table from `/v1/jobs` — last run, status badge,
+4. **Jobs dashboard** (`/jobs`): table from `/v1/jobs`, last run, status badge,
    success rate, p50/p95, runs; click a job → Explore filtered to that `name`.
    The scoped `cron.*` lens remains in the rail (the "both").
 
@@ -178,7 +178,7 @@ Jobs:   /v1/jobs aggregation (cron.* + project scope).
 ## 12. Security
 
 - Project metadata (names + service lists) is low-sensitivity; mutations are
-  gated by `canRead` per the chosen model — the read key already exposes all
+  gated by `canRead` per the chosen model, the read key already exposes all
   logs, so it is not the weakest link. Documented in USAGE.md.
 - Same-origin proxy model is unchanged; no new CORS surface.
 - Input validation mirrors `validate.js` (no unbounded strings/arrays; reject
@@ -192,7 +192,7 @@ Jobs:   /v1/jobs aggregation (cron.* + project scope).
   (status + duration + percentiles, and the no-field fallbacks).
 - **Console (vitest + MSW):** ProjectSwitcher (URL round-trip, narrows
   AppSwitcher), Manage Projects CRUD, Overview cards issue the right scoped
-  queries, Jobs table render + drill-in, a11y for the new controls — matching
+  queries, Jobs table render + drill-in, a11y for the new controls, matching
   current standards.
 
 ## 14. Non-goals (YAGNI)

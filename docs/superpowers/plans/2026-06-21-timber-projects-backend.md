@@ -1,8 +1,8 @@
-# Timber Projects — Backend Implementation Plan (Plan 1 of 2)
+# Timber Projects, Backend Implementation Plan (Plan 1 of 2)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add the server side of "Projects" — a registry that groups services (the per-key `app`), project-scoped reads on every query endpoint, and a `/v1/jobs` rollup — leaving the events schema untouched.
+**Goal:** Add the server side of "Projects", a registry that groups services (the per-key `app`), project-scoped reads on every query endpoint, and a `/v1/jobs` rollup, leaving the events schema untouched.
 
 **Architecture:** A new `projects` Mongo collection (slug-keyed) with CRUD under `/v1/projects`. A `project=<slug>` param on the read endpoints is resolved (server-side) to the project's `apps` and applied as an `app $in {...}` clause via one shared `appScope()` helper. A new `/v1/jobs` aggregation rolls up `cron.*` events per job. Everything reuses the existing `buildApp(config, deps)` DI, `readGate`, `parse*/run*` shape, and `node:test` harness.
 
@@ -21,28 +21,28 @@
 ## File Structure
 
 **Create:**
-- `src/query/scope.js` — `appScope(app, apps)` → the Mongo `app` match clause. One responsibility: project/app scope.
-- `src/projects.js` — project registry: pure validation + slug helpers + thin Mongo data access (list/create/update/delete/resolve). No HTTP.
-- `src/query/jobs.js` — `parseJobsQuery` / `buildJobsPipeline` / `runJobs`. Mirrors `src/query/stats.js`.
+- `src/query/scope.js`, `appScope(app, apps)` → the Mongo `app` match clause. One responsibility: project/app scope.
+- `src/projects.js`, project registry: pure validation + slug helpers + thin Mongo data access (list/create/update/delete/resolve). No HTTP.
+- `src/query/jobs.js`, `parseJobsQuery` / `buildJobsPipeline` / `runJobs`. Mirrors `src/query/stats.js`.
 - `test/scope.test.js`, `test/projects.test.js`, `test/query-jobs.test.js`, `test/integration-projects.test.js` (Mongo-gated).
 
 **Modify:**
-- `src/config.js` — add `mongoProjectsCollectionName` + `jobsEventPrefixes`.
-- `src/mongo.js` — no change required (projects collection is obtained from the same client in `server.js`). Indexes live in `src/projects.js`.
-- `src/server.js` — new `getProjectsCollection` dep; `/v1/projects` CRUD routes; `resolveScope()` + thread `apps` into the 5 read handlers; `/v1/jobs` route; connect the projects collection in `main()`.
-- `src/query/logs.js`, `src/query/groupby.js`, `src/query/stats.js`, `src/query/events.js`, `src/query/facets.js` — apply `appScope` in each `run*`/`build*Pipeline`.
-- `test/config.test.js` — assert the two new config fields.
-- `USAGE.md`, `.env.example`, `README.md` — document the endpoints + config.
+- `src/config.js`, add `mongoProjectsCollectionName` + `jobsEventPrefixes`.
+- `src/mongo.js`, no change required (projects collection is obtained from the same client in `server.js`). Indexes live in `src/projects.js`.
+- `src/server.js`, new `getProjectsCollection` dep; `/v1/projects` CRUD routes; `resolveScope()` + thread `apps` into the 5 read handlers; `/v1/jobs` route; connect the projects collection in `main()`.
+- `src/query/logs.js`, `src/query/groupby.js`, `src/query/stats.js`, `src/query/events.js`, `src/query/facets.js`, apply `appScope` in each `run*`/`build*Pipeline`.
+- `test/config.test.js`, assert the two new config fields.
+- `USAGE.md`, `.env.example`, `README.md`, document the endpoints + config.
 
 ---
 
-## Task 1: Config — projects collection + jobs prefixes
+## Task 1: Config, projects collection + jobs prefixes
 
 **Files:**
 - Modify: `src/config.js`
 - Test: `test/config.test.js`
 
-- [ ] **Step 1: Write failing tests** — append to `test/config.test.js`:
+- [ ] **Step 1: Write failing tests**, append to `test/config.test.js`:
 
 ```js
 test('projects + jobs config: defaults', (t) => {
@@ -68,7 +68,7 @@ test('projects + jobs config: overrides (CSV prefixes trimmed)', (t) => {
 Run: `node --test test/config.test.js`
 Expected: FAIL (`cfg.mongoProjectsCollectionName` is `undefined`).
 
-- [ ] **Step 3: Implement** — in `src/config.js`, add a CSV helper after `clampedKbToBytes` (near line 61):
+- [ ] **Step 3: Implement**, in `src/config.js`, add a CSV helper after `clampedKbToBytes` (near line 61):
 
 ```js
 function csvEnv(env, name, def) {
@@ -111,7 +111,7 @@ git commit -m "feat(projects): config for projects collection + jobs event prefi
 - Create: `src/query/scope.js`
 - Test: `test/scope.test.js`
 
-- [ ] **Step 1: Write failing test** — `test/scope.test.js`:
+- [ ] **Step 1: Write failing test**, `test/scope.test.js`:
 
 ```js
 import { test } from 'node:test';
@@ -144,7 +144,7 @@ test('app outside project -> matches nothing', () => {
 Run: `node --test test/scope.test.js`
 Expected: FAIL (module not found).
 
-- [ ] **Step 3: Implement** — `src/query/scope.js`:
+- [ ] **Step 3: Implement**, `src/query/scope.js`:
 
 ```js
 // Build the Mongo `app` match clause from an optional single app and an optional
@@ -186,7 +186,7 @@ git commit -m "feat(projects): appScope() query helper for project/app scoping"
 - Create: `src/projects.js`
 - Test: `test/projects.test.js` (pure-unit: validation + slug only)
 
-- [ ] **Step 1: Write failing tests** — `test/projects.test.js`:
+- [ ] **Step 1: Write failing tests**, `test/projects.test.js`:
 
 ```js
 import { test } from 'node:test';
@@ -234,7 +234,7 @@ test('validate patch: name optional, unknown key rejected', () => {
 Run: `node --test test/projects.test.js`
 Expected: FAIL (module not found).
 
-- [ ] **Step 3: Implement** — `src/projects.js`:
+- [ ] **Step 3: Implement**, `src/projects.js`:
 
 ```js
 // Server-side project registry. A project groups services (the per-key `app`).
@@ -374,7 +374,7 @@ Expected: PASS (6 tests). (Data-access functions are exercised in Task 5's Mongo
 
 ```bash
 git add src/projects.js test/projects.test.js
-git commit -m "feat(projects): registry module — validation, slug, Mongo data access"
+git commit -m "feat(projects): registry module, validation, slug, Mongo data access"
 ```
 
 ---
@@ -384,13 +384,13 @@ git commit -m "feat(projects): registry module — validation, slug, Mongo data 
 **Files:**
 - Modify: `src/server.js` (DI + `main()` connect)
 
-- [ ] **Step 1: Add the import** — in `src/server.js` after the `connectMongo` import (line 23):
+- [ ] **Step 1: Add the import**, in `src/server.js` after the `connectMongo` import (line 23):
 
 ```js
 import { ensureProjectIndexes } from './projects.js';
 ```
 
-- [ ] **Step 2: Accept the new dep** — change the `buildApp` destructure (line 61) from:
+- [ ] **Step 2: Accept the new dep**, change the `buildApp` destructure (line 61) from:
 
 ```js
   const { keyring, walWriter, flusher, getCollection, now } = deps;
@@ -402,7 +402,7 @@ to:
 
 (Existing tests that don't pass `getProjectsCollection` keep working: the projects routes guard with optional chaining and answer 503, exactly like a missing events collection.)
 
-- [ ] **Step 3: Connect projects in `main()`** — in the background connect loop (around line 348-355), after `await ensureIndexes(conn.collection);` add the projects collection from the same client, and expose it. Replace the block:
+- [ ] **Step 3: Connect projects in `main()`**, in the background connect loop (around line 348-355), after `await ensureIndexes(conn.collection);` add the projects collection from the same client, and expose it. Replace the block:
 
 ```js
           const conn = await connectMongo(config.mongodbUri, {
@@ -429,7 +429,7 @@ with:
           log(`mongo connected (db=${config.mongoDbName} collection=${config.mongoCollectionName}, projects=${config.mongoProjectsCollectionName})`);
 ```
 
-- [ ] **Step 4: Declare + pass the getter** — near `let collection = null;` (line 314) add:
+- [ ] **Step 4: Declare + pass the getter**, near `let collection = null;` (line 314) add:
 
 ```js
   let projectsCollection = null;
@@ -465,7 +465,7 @@ git commit -m "feat(projects): wire projects collection through buildApp DI"
 
 > **Router note:** `src/http/router.js` matches `METHOD pathname` exactly (no path params). So the slug travels in the body (PATCH) or `?slug=` (DELETE), all under `/v1/projects`.
 
-- [ ] **Step 1: Write failing Mongo-gated test** — `test/integration-projects.test.js` (mirror the setup in `test/integration-mongo.test.js:90-110`):
+- [ ] **Step 1: Write failing Mongo-gated test**, `test/integration-projects.test.js` (mirror the setup in `test/integration-mongo.test.js:90-110`):
 
 ```js
 import { test, before, after, beforeEach } from 'node:test';
@@ -550,9 +550,9 @@ test('PATCH/DELETE unknown slug -> 404; bad body -> 400; no key -> 401', async (
 - [ ] **Step 2: Run, verify it fails**
 
 Run: `TIMBER_TEST_MONGODB_URI="$TIMBER_TEST_MONGODB_URI" node --test test/integration-projects.test.js`
-Expected: FAIL (routes 404) — or `t.skip` if no Mongo URI; set one to validate.
+Expected: FAIL (routes 404), or `t.skip` if no Mongo URI; set one to validate.
 
-- [ ] **Step 3: Implement the routes** — in `src/server.js`, add the imports after the `ensureProjectIndexes` import:
+- [ ] **Step 3: Implement the routes**, in `src/server.js`, add the imports after the `ensureProjectIndexes` import:
 
 ```js
 import {
@@ -641,7 +641,7 @@ git commit -m "feat(projects): CRUD routes under /v1/projects (read-key gated)"
 - Modify: `src/query/logs.js`, `src/query/groupby.js`, `src/query/stats.js`, `src/query/events.js`, `src/query/facets.js`, `src/server.js`
 - Test: extend `test/integration-projects.test.js`
 
-- [ ] **Step 1: Write failing test** — append to `test/integration-projects.test.js`:
+- [ ] **Step 1: Write failing test**, append to `test/integration-projects.test.js`:
 
 ```js
 test('project scope: /v1/logs filters to member apps; unknown -> 400', async (t) => {
@@ -679,7 +679,7 @@ Expected: FAIL (`project` is an unknown param → 400 for the valid-slug case to
 
 - [ ] **Step 3a: Thread `apps` into the query modules.**
 
-`src/query/logs.js` — add the import at top and apply scope in `runLogsQuery`:
+`src/query/logs.js`, add the import at top and apply scope in `runLogsQuery`:
 ```js
 import { appScope } from './scope.js';
 ```
@@ -694,7 +694,7 @@ export async function runLogsQuery(collection, { filter, limit, apps }, { maxTim
 ```
 (Use `scoped` in `.find(...)`; the rest of the function is unchanged.)
 
-`src/query/groupby.js` — add `import { appScope } from './scope.js';` and change `buildGroupByPipeline` (line 95) to accept/apply `apps`:
+`src/query/groupby.js`, add `import { appScope } from './scope.js';` and change `buildGroupByPipeline` (line 95) to accept/apply `apps`:
 ```js
 export function buildGroupByPipeline({ by, filter, limit, like, apps }) {
   return [
@@ -702,7 +702,7 @@ export function buildGroupByPipeline({ by, filter, limit, like, apps }) {
 ```
 (rest unchanged).
 
-`src/query/stats.js` — add `import { appScope } from './scope.js';` and change `buildStatsPipeline` (line 65) `$match`:
+`src/query/stats.js`, add `import { appScope } from './scope.js';` and change `buildStatsPipeline` (line 65) `$match`:
 ```js
 export function buildStatsPipeline({ group, from, to, app, event, apps }) {
   return [
@@ -716,7 +716,7 @@ export function buildStatsPipeline({ group, from, to, app, event, apps }) {
 ```
 (replaces the old `...(app && { app })`).
 
-`src/query/facets.js` — add `import { appScope } from './scope.js';` and change `buildFacetsPipeline` (line 56):
+`src/query/facets.js`, add `import { appScope } from './scope.js';` and change `buildFacetsPipeline` (line 56):
 ```js
 export function buildFacetsPipeline({ from, to, app, apps }) {
   return [
@@ -724,7 +724,7 @@ export function buildFacetsPipeline({ from, to, app, apps }) {
 ```
 (replaces `...(app && { app })`).
 
-`src/query/events.js` — add `import { appScope } from './scope.js';` and change `runEvents` (line 16):
+`src/query/events.js`, add `import { appScope } from './scope.js';` and change `runEvents` (line 16):
 ```js
 export async function runEvents(collection, { app, apps } = {}, { maxTimeMS } = {}) {
   const scope = appScope(app, apps);
@@ -745,7 +745,7 @@ import { resolveProjectApps } from './projects.js';
 ```js
   // Pull an optional ?project=<slug> out of the query, resolve it to member apps,
   // and remove it so the per-endpoint parsers (which 400 on unknown params) never
-  // see it. Returns { ok, apps } — apps is undefined (no scope), an array, or the
+  // see it. Returns { ok, apps }, apps is undefined (no scope), an array, or the
   // call already sent 400 (unknown project) / 503 (no projects storage).
   async function resolveScope(url, res) {
     const slug = url.searchParams.get('project');
@@ -794,7 +794,7 @@ git commit -m "feat(projects): project= scope on logs/stats/events/facets/groupb
 - Modify: `src/server.js`
 - Test: `test/query-jobs.test.js` (unit, fake collection) + extend `test/integration-projects.test.js`
 
-- [ ] **Step 1: Write failing unit test** — `test/query-jobs.test.js` (mirror the pure pipeline/post-process testing in `test/query-stats.test.js`):
+- [ ] **Step 1: Write failing unit test**, `test/query-jobs.test.js` (mirror the pure pipeline/post-process testing in `test/query-stats.test.js`):
 
 ```js
 import { test } from 'node:test';
@@ -833,10 +833,10 @@ test('runJobs: rolls up per job with status/duration/success rate', async () => 
 Run: `node --test test/query-jobs.test.js`
 Expected: FAIL (module not found).
 
-- [ ] **Step 3: Implement** — `src/query/jobs.js`:
+- [ ] **Step 3: Implement**, `src/query/jobs.js`:
 
 ```js
-// GET /v1/jobs — per-job rollups over job events (name starts with a configured
+// GET /v1/jobs, per-job rollups over job events (name starts with a configured
 // prefix, default `cron.`) within a time window + project scope. Mirrors the
 // parse/build/run shape of src/query/stats.js.
 import { appScope } from './scope.js';
@@ -931,7 +931,7 @@ export async function runJobs(collection, value, prefixes, { maxTimeMS } = {}) {
 }
 ```
 
-- [ ] **Step 4: Register the route** — in `src/server.js` add the import (merge with other query imports):
+- [ ] **Step 4: Register the route**, in `src/server.js` add the import (merge with other query imports):
 ```js
 import { parseJobsQuery, runJobs } from './query/jobs.js';
 ```
@@ -949,7 +949,7 @@ and add the route after `/v1/groupby` (line 231):
   });
 ```
 
-- [ ] **Step 5: Add a Mongo-gated integration test** — append to `test/integration-projects.test.js`:
+- [ ] **Step 5: Add a Mongo-gated integration test**, append to `test/integration-projects.test.js`:
 ```js
 test('/v1/jobs rolls up cron.* per job, project-scoped', async (t) => {
   if (!URI) return t.skip('no mongo');
@@ -990,7 +990,7 @@ git commit -m "feat(projects): /v1/jobs per-job rollup endpoint (project-scoped)
 **Files:**
 - Modify: `USAGE.md`, `.env.example`, `README.md`
 
-- [ ] **Step 1: USAGE.md** — add two env rows to the table (after the `WATCHTOWER_POLL_INTERVAL` row):
+- [ ] **Step 1: USAGE.md**, add two env rows to the table (after the `WATCHTOWER_POLL_INTERVAL` row):
 
 ```md
 | `TIMBER_PROJECTS_COLLECTION` | `projects` | Mongo collection holding project metadata (name + member services) |
@@ -999,15 +999,15 @@ git commit -m "feat(projects): /v1/jobs per-job rollup endpoint (project-scoped)
 
 Add a new `## Projects` section after `## Group & count` documenting: `GET/POST/PATCH/DELETE /v1/projects` (read key; PATCH carries `slug` in the body, DELETE via `?slug=`), the `project=<slug>` param on `/v1/logs|stats|events|facets|groupby`, and `GET /v1/jobs` (params `from`/`to`/`app`/`project`; returns `{ jobs:[{name,lastRunAt,lastStatus,runs,failures,successRate,p50Ms,p95Ms}], window }`).
 
-- [ ] **Step 2: .env.example** — add under the optional section:
+- [ ] **Step 2: .env.example**, add under the optional section:
 ```ini
 # TIMBER_PROJECTS_COLLECTION=projects   # Mongo collection for project metadata
 # TIMBER_JOBS_EVENT_PREFIX=cron.        # event-name prefixes treated as jobs
 ```
 
-- [ ] **Step 3: README.md** — in the API summary near the faceting endpoints note, add one line: projects + project-scoped reads + `/v1/jobs` back the Console's Projects feature.
+- [ ] **Step 3: README.md**, in the API summary near the faceting endpoints note, add one line: projects + project-scoped reads + `/v1/jobs` back the Console's Projects feature.
 
-- [ ] **Step 4: Verify docs match the API** — re-read the new section against the routes in `src/server.js`; confirm method/path/params line up.
+- [ ] **Step 4: Verify docs match the API**, re-read the new section against the routes in `src/server.js`; confirm method/path/params line up.
 
 - [ ] **Step 5: Commit**
 
@@ -1022,20 +1022,20 @@ git commit -m "docs(projects): document /v1/projects, project= scope, /v1/jobs +
 
 **Spec coverage:** Projects collection (T3) ✓ · CRUD API (T5) ✓ · `project` param resolving to `app $in` on all 5 read endpoints (T6) ✓ · single-`app` drill-down within project (T6, `appScope`) ✓ · `/v1/jobs` with status/duration/percentile + fallbacks (T7) ✓ · `canRead` gate on list + mutate (T5) ✓ · config `TIMBER_PROJECTS_COLLECTION` + `TIMBER_JOBS_EVENT_PREFIX` (T1) ✓ · validation mirroring `validate.js` (T3) ✓ · error handling 400/401/404/409/503 (T5) ✓ · docs (T8) ✓. Console items are intentionally **out of scope** (Plan 2).
 
-**Deviations from spec (intentional, noted):** (1) slug is the public identifier (no `_id`/ObjectId exposed) — simpler, avoids ObjectId edge cases; `project=<slug>`. (2) Duplicate-name returns **409** (Conflict), not 400 — more correct REST; documented. (3) PATCH carries `slug` in the body and DELETE via `?slug=` because `src/http/router.js` is exact-match (no path params) — avoids a risky router rewrite.
+**Deviations from spec (intentional, noted):** (1) slug is the public identifier (no `_id`/ObjectId exposed), simpler, avoids ObjectId edge cases; `project=<slug>`. (2) Duplicate-name returns **409** (Conflict), not 400, more correct REST; documented. (3) PATCH carries `slug` in the body and DELETE via `?slug=` because `src/http/router.js` is exact-match (no path params), avoids a risky router rewrite.
 
-**Placeholder scan:** none — every step has complete code/commands.
+**Placeholder scan:** none, every step has complete code/commands.
 
-**Type/name consistency:** `appScope(app, apps)` used identically in logs/groupby/stats/facets/events/jobs. `resolveScope` returns `{ ok, apps }`; handlers set `parsed.value.apps`. `validateProjectInput(raw, {partial})`, `createProject/updateProject(...,{now})`, `resolveProjectApps` → apps|null, `ensureProjectIndexes` — names match across tasks. `runJobs(collection, value, prefixes, {maxTimeMS})` matches its test and route call.
+**Type/name consistency:** `appScope(app, apps)` used identically in logs/groupby/stats/facets/events/jobs. `resolveScope` returns `{ ok, apps }`; handlers set `parsed.value.apps`. `validateProjectInput(raw, {partial})`, `createProject/updateProject(...,{now})`, `resolveProjectApps` → apps|null, `ensureProjectIndexes`, names match across tasks. `runJobs(collection, value, prefixes, {maxTimeMS})` matches its test and route call.
 
 ---
 
 ## Execution Handoff
 
-Plan complete and saved to `docs/superpowers/plans/2026-06-21-timber-projects-backend.md`. (Plan 2 — the Console — will be written after this backend lands, against the real API.)
+Plan complete and saved to `docs/superpowers/plans/2026-06-21-timber-projects-backend.md`. (Plan 2, the Console, will be written after this backend lands, against the real API.)
 
 Two execution options:
-1. **Subagent-Driven (recommended)** — a fresh subagent per task, reviewed between tasks, fast iteration.
-2. **Inline Execution** — execute tasks in this session via executing-plans, batched with checkpoints.
+1. **Subagent-Driven (recommended)**, a fresh subagent per task, reviewed between tasks, fast iteration.
+2. **Inline Execution**, execute tasks in this session via executing-plans, batched with checkpoints.
 
 Which approach?
