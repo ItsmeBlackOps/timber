@@ -18,7 +18,9 @@ import {
   FACETS_RESPONSE,
   GROUPBY_RESPONSE,
   HEALTH_RESPONSE,
+  JOBS_RESPONSE,
   LOGS_RESPONSE,
+  PROJECTS_RESPONSE,
   STATS_RESPONSE,
 } from './fixtures'
 
@@ -42,6 +44,8 @@ export const defaultHandlers: HttpHandler[] = [
   http.get('/v1/events', () => HttpResponse.json(EVENTS_RESPONSE)),
   http.get('/v1/facets', () => HttpResponse.json(FACETS_RESPONSE)),
   http.get('/v1/groupby', () => HttpResponse.json(GROUPBY_RESPONSE)),
+  http.get('/v1/projects', () => HttpResponse.json(PROJECTS_RESPONSE)),
+  http.get('/v1/jobs', () => HttpResponse.json(JOBS_RESPONSE)),
   http.get('/healthz', () => HttpResponse.json(HEALTH_RESPONSE)),
 ]
 

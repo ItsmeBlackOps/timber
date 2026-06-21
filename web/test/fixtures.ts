@@ -12,8 +12,10 @@ import type {
   FacetsResponse,
   GroupByResponse,
   Health,
+  JobsResponse,
   LogDoc,
   LogsResponse,
+  ProjectsResponse,
   StatsResponse,
 } from '@/lib/types'
 
@@ -185,4 +187,25 @@ export const HEALTH_RESPONSE: Health = {
   wal: { totalBytes: 4096, backlogBytes: 0, overBudget: false },
   flusher: { running: true, caughtUp: true, flushedTotal: 1234, lastError: null },
   mongo: { connected: true },
+}
+
+// ---------------------------------------------------------------------------
+// Projects + jobs (per-project lenses).
+// ---------------------------------------------------------------------------
+
+/** Two projects, each grouping one-or-more apps. */
+export const PROJECTS_RESPONSE: ProjectsResponse = {
+  projects: [
+    { slug: 'acme', name: 'Acme', apps: ['api', 'worker'] },
+    { slug: 'web-co', name: 'Web Co', apps: ['scheduler'] },
+  ],
+}
+
+/** Two job rollups: one all-green, one with failures + null latency percentiles. */
+export const JOBS_RESPONSE: JobsResponse = {
+  jobs: [
+    { name: 'cron.report', lastRunAt: '2026-06-20T03:00:00.000Z', lastStatus: 'ok', runs: 12, failures: 0, successRate: 1, p50Ms: 1200, p95Ms: 3400 },
+    { name: 'cron.sync', lastRunAt: '2026-06-20T02:00:00.000Z', lastStatus: 'failed', runs: 8, failures: 3, successRate: 0.625, p50Ms: null, p95Ms: null },
+  ],
+  window: { from: '2026-06-19T00:00:00.000Z', to: '2026-06-20T00:00:00.000Z' },
 }

@@ -14,6 +14,9 @@ import type {
   FacetsResponse,
   GroupByResponse,
   Health,
+  Project,
+  ProjectsResponse,
+  JobsResponse,
 } from '@/lib/types'
 
 /**
@@ -76,3 +79,26 @@ export const getEvents = (p?: URLSearchParams) => apiGet<EventsResponse>('/v1/ev
 export const getFacets = (p: URLSearchParams) => apiGet<FacetsResponse>('/v1/facets', p)
 export const getGroupBy = (p: URLSearchParams) => apiGet<GroupByResponse>('/v1/groupby', p)
 export const getHealth = () => apiGet<Health>('/healthz')
+
+// Mutating requests (projects CRUD). Mirrors apiGet's same-origin Bearer gate and
+// ApiError-on-non-2xx; returns null for 204 (DELETE).
+async function apiSend<T>(method: 'POST' | 'PATCH' | 'DELETE', path: string, body?: unknown): Promise<T | null> {
+  const { apiBaseUrl, readKey } = loadSettings()
+  const url = (apiBaseUrl || '') + path
+  const headers: Record<string, string> = { accept: 'application/json' }
+  if (readKey && isSameOrigin(url)) headers.authorization = `Bearer ${readKey}`
+  if (body !== undefined) headers['content-type'] = 'application/json'
+  const res = await fetch(url, { method, headers, body: body !== undefined ? JSON.stringify(body) : undefined })
+  if (!res.ok) throw new ApiError(res.status, await readBody(res))
+  if (res.status === 204) return null
+  return (await res.json()) as T
+}
+
+export const getProjects = () => apiGet<ProjectsResponse>('/v1/projects')
+export const createProject = (body: { name: string; apps: string[] }) =>
+  apiSend<Project>('POST', '/v1/projects', body)
+export const updateProject = (body: { slug: string; name?: string; apps?: string[] }) =>
+  apiSend<Project>('PATCH', '/v1/projects', body)
+export const deleteProject = (slug: string) =>
+  apiSend<null>('DELETE', `/v1/projects?slug=${encodeURIComponent(slug)}`)
+export const getJobs = (p?: URLSearchParams) => apiGet<JobsResponse>('/v1/jobs', p)

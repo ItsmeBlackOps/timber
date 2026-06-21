@@ -99,3 +99,33 @@ export class ApiError extends Error {
     this.body = body
   }
 }
+
+/** A project: a named grouping of apps used to scope per-project lenses. */
+export interface Project {
+  slug: string
+  name: string
+  apps: string[]
+}
+
+/** GET /v1/projects returns the configured projects. */
+export interface ProjectsResponse {
+  projects: Project[]
+}
+
+/** One job's rollup over the window (run counts + success rate + latency percentiles). */
+export interface JobRow {
+  name: string
+  lastRunAt: string
+  lastStatus: 'ok' | 'failed'
+  runs: number
+  failures: number
+  successRate: number | null
+  p50Ms: number | null
+  p95Ms: number | null
+}
+
+/** GET /v1/jobs returns per-job rollups plus the resolved scan window. */
+export interface JobsResponse {
+  jobs: JobRow[]
+  window: { from: string; to: string }
+}

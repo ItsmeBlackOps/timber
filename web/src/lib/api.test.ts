@@ -12,7 +12,7 @@ const settingsMock = vi.hoisted(() => ({
 }))
 vi.mock('@/lib/settings', () => settingsMock)
 
-import { apiGet, getLogs, getStats, getEvents, getFacets, getGroupBy, getHealth } from '@/lib/api'
+import { apiGet, getLogs, getStats, getEvents, getFacets, getGroupBy, getHealth, getProjects, createProject, deleteProject } from '@/lib/api'
 
 const BASE_SETTINGS: Settings = {
   apiBaseUrl: '',
@@ -285,5 +285,36 @@ describe('typed endpoint helpers', () => {
     expect(hit).toBe(true)
     expect(res.ok).toBe(true)
     expect(res.mongo.connected).toBe(true)
+  })
+})
+
+describe('projects CRUD (mutating helpers)', () => {
+  it('getProjects returns the project list', async () => {
+    const r = await getProjects()
+    expect(r.projects.map((p) => p.slug)).toEqual(['acme', 'web-co'])
+  })
+
+  it('createProject posts name+apps and returns the created project', async () => {
+    let seen: unknown
+    server.use(http.post('/v1/projects', async ({ request }) => {
+      seen = await request.json()
+      return HttpResponse.json({ slug: 'x', name: 'X', apps: [] }, { status: 201 })
+    }))
+    const p = await createProject({ name: 'X', apps: [] })
+    expect(seen).toEqual({ name: 'X', apps: [] })
+    expect(p?.slug).toBe('x')
+  })
+
+  it('deleteProject sends the slug and returns null on 204', async () => {
+    let url = ''
+    server.use(http.delete('/v1/projects', ({ request }) => { url = request.url; return new HttpResponse(null, { status: 204 }) }))
+    const r = await deleteProject('acme')
+    expect(url).toContain('slug=acme')
+    expect(r).toBeNull()
+  })
+
+  it('apiSend throws ApiError on a non-2xx (409 duplicate)', async () => {
+    server.use(http.post('/v1/projects', () => HttpResponse.json({ error: 'dup' }, { status: 409 })))
+    await expect(createProject({ name: 'X', apps: [] })).rejects.toMatchObject({ status: 409 })
   })
 })
