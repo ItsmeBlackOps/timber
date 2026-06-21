@@ -99,3 +99,22 @@ test('project scope: /v1/logs filters to member apps; unknown -> 400', async (t)
 
   assert.equal((await fetch(`${base}/v1/logs?project=nope`, { headers: auth })).status, 400);
 });
+
+test('/v1/jobs rolls up cron.* per job, project-scoped', async (t) => {
+  if (!URI) return t.skip('no mongo');
+  const events = client.db('timber_test_projects').collection('events');
+  await events.deleteMany({});
+  await events.insertMany([
+    { _id: 'j1', app: 'web', event: 'cron.report', level: 'info', data: { latencyMs: 100 }, receivedAt: '2026-06-20T01:00:00.000Z' },
+    { _id: 'j2', app: 'web', event: 'cron.report', level: 'error', data: { latencyMs: 200 }, receivedAt: '2026-06-20T02:00:00.000Z' },
+    { _id: 'j3', app: 'other', event: 'cron.report', level: 'info', receivedAt: '2026-06-20T03:00:00.000Z' },
+    { _id: 'j4', app: 'web', event: 'ai.call', level: 'info', receivedAt: '2026-06-20T04:00:00.000Z' },
+  ]);
+  const { slug } = await (await fetch(`${base}/v1/projects`, { method: 'POST', headers: auth, body: JSON.stringify({ name: 'Jobs P', apps: ['web'] }) })).json();
+  const out = await (await fetch(`${base}/v1/jobs?project=${slug}&from=2026-06-19T00:00:00Z&to=2026-06-21T00:00:00Z`, { headers: auth })).json();
+  assert.equal(out.jobs.length, 1);
+  assert.equal(out.jobs[0].name, 'cron.report');
+  assert.equal(out.jobs[0].runs, 2);
+  assert.equal(out.jobs[0].failures, 1);
+  assert.equal(out.jobs[0].lastStatus, 'failed');
+});

@@ -27,6 +27,7 @@ import { parseStatsQuery, runStats } from './query/stats.js';
 import { parseEventsQuery, runEvents } from './query/events.js';
 import { parseFacetsQuery, runFacets } from './query/facets.js';
 import { parseGroupByQuery, runGroupBy } from './query/groupby.js';
+import { parseJobsQuery, runJobs } from './query/jobs.js';
 
 // Read once at startup (C11). Buffer, so content-length is exact bytes.
 const UI_HTML = readFileSync(new URL('./ui/index.html', import.meta.url));
@@ -316,6 +317,17 @@ export function buildApp(config, deps) {
     if (!parsed.ok) return sendError(res, 400, parsed.error);
     parsed.value.apps = scope.apps;
     sendJson(res, 200, await runGroupBy(collection, parsed.value, { maxTimeMS: config.queryMaxTimeMs }));
+  });
+
+  router.add('GET', '/v1/jobs', async (req, res, url) => {
+    const collection = readGate(req, res);
+    if (!collection) return;
+    const scope = await resolveScope(url, res);
+    if (!scope.ok) return;
+    const parsed = parseJobsQuery(url.searchParams);
+    if (!parsed.ok) return sendError(res, 400, parsed.error);
+    parsed.value.apps = scope.apps;
+    sendJson(res, 200, await runJobs(collection, parsed.value, config.jobsEventPrefixes, { maxTimeMS: config.queryMaxTimeMs }));
   });
 
   router.add('GET', '/', (req, res) => {
