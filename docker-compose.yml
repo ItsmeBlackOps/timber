@@ -45,6 +45,11 @@ services:
     volumes:
       - timber-wal:/data/wal
     restart: unless-stopped
+    labels:
+      # Watchtower (see the watchtower service below) auto-updates ONLY containers
+      # carrying this label. Mongo intentionally omits it, so the DB is never
+      # auto-updated by a Timber image push.
+      - com.centurylinklabs.watchtower.enable=true
     logging:
       driver: json-file
       options:
@@ -66,6 +71,33 @@ services:
       timeout: 5s
       retries: 5
       start_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Auto-deploy (CD): polls Docker Hub and, when a new TIMBER_IMAGE is pushed, pulls
+  # it and recreates ONLY the timber container (same env + timber-wal volume, so
+  # unflushed WAL events replay on boot — no accepted-record loss across an update).
+  # Scoped by the enable label on `timber` above + WATCHTOWER_LABEL_ENABLE, so it
+  # never touches mongo or any other container on the host. Needs the Docker socket
+  # (root-equivalent on the host) — inherent to any auto-updater; the label scope
+  # limits blast radius. Tune the poll with WATCHTOWER_POLL_INTERVAL in .env
+  # (default 300s; mind Docker Hub rate limits). Pause auto-deploy any time with
+  # `docker compose stop watchtower`.
+  watchtower:
+    image: containrrr/watchtower
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Private TIMBER_IMAGE repo? Run `docker login` on the host, then uncomment to
+      # authenticate Watchtower's pulls with those credentials:
+      # - ~/.docker/config.json:/config.json:ro
+    environment:
+      WATCHTOWER_LABEL_ENABLE: "true"
+      WATCHTOWER_CLEANUP: "true"
+      WATCHTOWER_POLL_INTERVAL: ${WATCHTOWER_POLL_INTERVAL:-300}
+    restart: unless-stopped
     logging:
       driver: json-file
       options:

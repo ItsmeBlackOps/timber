@@ -74,6 +74,15 @@ curl -s http://localhost:7710/healthz
 The WAL lives on the named volume `timber-wal`, so accepted-but-unflushed events
 survive container restarts.
 
+**Auto-deploy (CD).** The stack includes a
+[Watchtower](https://containrrr.dev/watchtower/) service that polls Docker Hub and,
+whenever a new `TIMBER_IMAGE` is pushed, pulls it and recreates the `timber`
+container with the same env + `timber-wal` volume — so a `docker push` (from CI or
+devops) rolls out to the VM with no SSH. It is label-scoped to **only** the
+`timber` container (never `mongo` or other host containers). Tune the cadence with
+`WATCHTOWER_POLL_INTERVAL` (default 300s); pause it with `docker compose stop
+watchtower`.
+
 ## Console
 
 A richer web console lives in [`web/`](web/) — a TanStack-Router + Vite SPA for

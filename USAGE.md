@@ -459,6 +459,7 @@ secret-looking keys before sending.
 | `TIMBER_FLUSH_INTERVAL_MS` | `200` | flusher idle poll interval |
 | `TIMBER_QUERY_MAX_TIME_MS` | `5000` | server-side `maxTimeMS` cap on read queries (regex/scan guard); `0` disables |
 | `TIMBER_CLUSTER` | `0` | `>0` forks N workers (`node:cluster`), one WAL subdir per worker. Off by default |
+| `WATCHTOWER_POLL_INTERVAL` | `300` | compose only — seconds between Docker Hub checks by the bundled `watchtower` auto-deploy service. Lower = faster rollout, more registry pulls |
 
 ---
 
