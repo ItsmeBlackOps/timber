@@ -95,6 +95,63 @@ export function buildApp(config, deps) {
     return collection;
   }
 
+  // Project-registry routes. Per design, a read key suffices for list AND mutate
+  // (the read key already exposes all logs, so project metadata is not the weakest
+  // link). Returns the projects collection or null after sending 401/503.
+  function projectsGate(req, res) {
+    const principal = keyring.authenticate(req.headers.authorization);
+    if (!canRead(principal)) { unauthorized(res); return null; }
+    const pc = getProjectsCollection?.();
+    if (!pc) { sendError(res, 503, 'storage unavailable'); return null; }
+    return pc;
+  }
+
+  async function readJsonBody(req, res) {
+    const body = await readBody(req, config.maxBodyBytes);
+    if (!body.ok) { sendError(res, body.status, 'request body too large'); return undefined; }
+    try { return JSON.parse(body.buffer.toString('utf8')); }
+    catch { sendError(res, 400, 'request body is not valid JSON'); return undefined; }
+  }
+
+  router.add('GET', '/v1/projects', async (req, res) => {
+    const pc = projectsGate(req, res); if (!pc) return;
+    sendJson(res, 200, { projects: await listProjects(pc, { maxTimeMS: config.queryMaxTimeMs }) });
+  });
+
+  router.add('POST', '/v1/projects', async (req, res) => {
+    const pc = projectsGate(req, res); if (!pc) return;
+    const raw = await readJsonBody(req, res); if (raw === undefined) return;
+    const v = validateProjectInput(raw, { partial: false });
+    if (!v.ok) return sendError(res, 400, v.error);
+    const created = await createProject(pc, v.value, { now });
+    if (!created.ok) return sendError(res, 409, 'project name already exists');
+    sendJson(res, 201, created.value);
+  });
+
+  router.add('PATCH', '/v1/projects', async (req, res) => {
+    const pc = projectsGate(req, res); if (!pc) return;
+    const raw = await readJsonBody(req, res); if (raw === undefined) return;
+    if (!raw || typeof raw !== 'object' || typeof raw.slug !== 'string' || raw.slug.length === 0) {
+      return sendError(res, 400, 'slug is required');
+    }
+    const { slug, ...rest } = raw;
+    const v = validateProjectInput(rest, { partial: true });
+    if (!v.ok) return sendError(res, 400, v.error);
+    const updated = await updateProject(pc, slug, v.value, { now });
+    if (updated.notFound) return sendError(res, 404, 'project not found');
+    if (updated.conflict) return sendError(res, 409, 'project name already exists');
+    sendJson(res, 200, updated.value);
+  });
+
+  router.add('DELETE', '/v1/projects', async (req, res, url) => {
+    const pc = projectsGate(req, res); if (!pc) return;
+    const slug = url.searchParams.get('slug');
+    if (!slug) return sendError(res, 400, 'slug query parameter is required');
+    const ok = await deleteProject(pc, slug);
+    if (!ok) return sendError(res, 404, 'project not found');
+    res.writeHead(204); res.end();
+  });
+
   router.add('GET', '/healthz', async (req, res) => {
     const checkpoint = await loadCheckpoint(config.walDir);
     const backlog = await backlogBytes(config.walDir, checkpoint);

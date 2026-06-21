@@ -1048,7 +1048,7 @@ test('USAGE.md execution-time-cap note lists every maxTimeMS-capped read endpoin
   // the doc assertion below (a zero/under-count here must never pass silently).
   assert.deepEqual(
     [...cappedEndpoints].sort(),
-    ['/v1/events', '/v1/facets', '/v1/groupby', '/v1/logs', '/v1/stats'],
+    ['/v1/events', '/v1/facets', '/v1/groupby', '/v1/logs', '/v1/projects', '/v1/stats'],
     'maxTimeMS-capped GET endpoints in src/server.js changed; update this test and USAGE.md',
   );
 
