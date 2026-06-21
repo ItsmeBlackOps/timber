@@ -82,9 +82,9 @@ test('project scope: /v1/logs filters to member apps; unknown -> 400', async (t)
   const events = db.collection('events');
   await events.deleteMany({});
   await events.insertMany([
-    { _id: 'e1', app: 'web', event: 'x', level: 'info', receivedAt: '2026-06-20T00:00:00.000Z' },
-    { _id: 'e2', app: 'api', event: 'x', level: 'info', receivedAt: '2026-06-20T00:00:01.000Z' },
-    { _id: 'e3', app: 'other', event: 'x', level: 'info', receivedAt: '2026-06-20T00:00:02.000Z' },
+    { _id: 'e1', app: 'web', event: 'x', level: 'info', receivedAt: new Date('2026-06-20T00:00:00.000Z') },
+    { _id: 'e2', app: 'api', event: 'x', level: 'info', receivedAt: new Date('2026-06-20T00:00:01.000Z') },
+    { _id: 'e3', app: 'other', event: 'x', level: 'info', receivedAt: new Date('2026-06-20T00:00:02.000Z') },
   ]);
   const { slug } = await (await fetch(`${base}/v1/projects`, { method: 'POST', headers: auth, body: JSON.stringify({ name: 'Scoped', apps: ['web', 'api'] }) })).json();
 
@@ -105,10 +105,10 @@ test('/v1/jobs rolls up cron.* per job, project-scoped', async (t) => {
   const events = client.db('timber_test_projects').collection('events');
   await events.deleteMany({});
   await events.insertMany([
-    { _id: 'j1', app: 'web', event: 'cron.report', level: 'info', data: { latencyMs: 100 }, receivedAt: '2026-06-20T01:00:00.000Z' },
-    { _id: 'j2', app: 'web', event: 'cron.report', level: 'error', data: { latencyMs: 200 }, receivedAt: '2026-06-20T02:00:00.000Z' },
-    { _id: 'j3', app: 'other', event: 'cron.report', level: 'info', receivedAt: '2026-06-20T03:00:00.000Z' },
-    { _id: 'j4', app: 'web', event: 'ai.call', level: 'info', receivedAt: '2026-06-20T04:00:00.000Z' },
+    { _id: 'j1', app: 'web', event: 'cron.report', level: 'info', data: { latencyMs: 100 }, receivedAt: new Date('2026-06-20T01:00:00.000Z') },
+    { _id: 'j2', app: 'web', event: 'cron.report', level: 'error', data: { latencyMs: 200 }, receivedAt: new Date('2026-06-20T02:00:00.000Z') },
+    { _id: 'j3', app: 'other', event: 'cron.report', level: 'info', receivedAt: new Date('2026-06-20T03:00:00.000Z') },
+    { _id: 'j4', app: 'web', event: 'ai.call', level: 'info', receivedAt: new Date('2026-06-20T04:00:00.000Z') },
   ]);
   const { slug } = await (await fetch(`${base}/v1/projects`, { method: 'POST', headers: auth, body: JSON.stringify({ name: 'Jobs P', apps: ['web'] }) })).json();
   const out = await (await fetch(`${base}/v1/jobs?project=${slug}&from=2026-06-19T00:00:00Z&to=2026-06-21T00:00:00Z`, { headers: auth })).json();
@@ -139,7 +139,7 @@ test('empty project (no member apps) matches nothing on reads', async (t) => {
   if (!URI) return t.skip('no mongo');
   const events = client.db('timber_test_projects').collection('events');
   await events.deleteMany({});
-  await events.insertMany([{ _id: 'x1', app: 'web', event: 'e', level: 'info', receivedAt: '2026-06-20T00:00:00.000Z' }]);
+  await events.insertMany([{ _id: 'x1', app: 'web', event: 'e', level: 'info', receivedAt: new Date('2026-06-20T00:00:00.000Z') }]);
   const { slug } = await (await fetch(`${base}/v1/projects`, { method: 'POST', headers: auth, body: JSON.stringify({ name: 'Empty', apps: [] }) })).json();
   const r = await (await fetch(`${base}/v1/logs?project=${slug}`, { headers: auth })).json();
   assert.equal(r.items.length, 0);
