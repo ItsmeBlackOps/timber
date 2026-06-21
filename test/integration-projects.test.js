@@ -118,3 +118,29 @@ test('/v1/jobs rolls up cron.* per job, project-scoped', async (t) => {
   assert.equal(out.jobs[0].failures, 1);
   assert.equal(out.jobs[0].lastStatus, 'failed');
 });
+
+test('PATCH rename to an existing name -> 409', async (t) => {
+  if (!URI) return t.skip('no mongo');
+  await fetch(`${base}/v1/projects`, { method: 'POST', headers: auth, body: JSON.stringify({ name: 'Alpha' }) });
+  const { slug } = await (await fetch(`${base}/v1/projects`, { method: 'POST', headers: auth, body: JSON.stringify({ name: 'Beta' }) })).json();
+  const r = await fetch(`${base}/v1/projects`, { method: 'PATCH', headers: auth, body: JSON.stringify({ slug, name: 'Alpha' }) });
+  assert.equal(r.status, 409);
+});
+
+test('slug dedup: distinct names with the same slug root get a numeric suffix', async (t) => {
+  if (!URI) return t.skip('no mongo');
+  const a = await (await fetch(`${base}/v1/projects`, { method: 'POST', headers: auth, body: JSON.stringify({ name: 'Repeat Name' }) })).json();
+  const b = await (await fetch(`${base}/v1/projects`, { method: 'POST', headers: auth, body: JSON.stringify({ name: 'repeat   name' }) })).json();
+  assert.equal(a.slug, 'repeat-name');
+  assert.equal(b.slug, 'repeat-name-2');
+});
+
+test('empty project (no member apps) matches nothing on reads', async (t) => {
+  if (!URI) return t.skip('no mongo');
+  const events = client.db('timber_test_projects').collection('events');
+  await events.deleteMany({});
+  await events.insertMany([{ _id: 'x1', app: 'web', event: 'e', level: 'info', receivedAt: '2026-06-20T00:00:00.000Z' }]);
+  const { slug } = await (await fetch(`${base}/v1/projects`, { method: 'POST', headers: auth, body: JSON.stringify({ name: 'Empty', apps: [] }) })).json();
+  const r = await (await fetch(`${base}/v1/logs?project=${slug}`, { headers: auth })).json();
+  assert.equal(r.items.length, 0);
+});
