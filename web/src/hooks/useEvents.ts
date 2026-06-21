@@ -6,11 +6,11 @@ import { getEvents } from '@/lib/api'
 import type { EventsResponse } from '@/lib/types'
 import { useHasReadKey } from './_shared'
 
-/** Query GET /v1/events (no params). Disabled until a read key is set. */
-export function useEvents() {
+/** Query GET /v1/events (optional project scope). Disabled until a read key is set. */
+export function useEvents(project?: string) {
   return useQuery<EventsResponse>({
-    queryKey: ['events'],
-    queryFn: () => getEvents(),
+    queryKey: ['events', project ?? null],
+    queryFn: () => getEvents(project ? new URLSearchParams({ project }) : undefined),
     enabled: useHasReadKey(),
   })
 }

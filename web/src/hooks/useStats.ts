@@ -18,9 +18,10 @@ export function useStats(
   group: 'hour' | 'day',
   app?: string,
   event?: string,
+  project?: string,
 ) {
   return useQuery<StatsResponse>({
-    queryKey: ['stats', range.from, range.to, group, app ?? null, event ?? null],
+    queryKey: ['stats', range.from, range.to, group, app ?? null, event ?? null, project ?? null],
     queryFn: () => {
       const params = new URLSearchParams()
       params.set('group', group)
@@ -28,6 +29,7 @@ export function useStats(
       params.set('to', range.to)
       if (app) params.set('app', app)
       if (event) params.set('event', event)
+      if (project) params.set('project', project)
       return getStats(params)
     },
     enabled: useHasReadKey(),
