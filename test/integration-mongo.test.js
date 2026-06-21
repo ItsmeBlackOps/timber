@@ -293,6 +293,81 @@ test('integration: full stack against real MongoDB (WAL -> flusher -> query -> r
     });
   });
 
+  // A small dedicated batch (NO runId, so it never disturbs the RUN_ID count the
+  // replay subtest re-checks) with per-user emails and explicit levels, so the
+  // real $facet/$objectToArray facets pipeline and the groupby aggregation can be
+  // asserted against a known distribution.
+  const GB_GROUP = 'gb';
+  await t.test('facets discovers seeded ids/data keys against real Mongo', async () => {
+    const batch = [
+      { event: 'ai.request', level: 'error', ids: { userEmail: 'alice@e.com', grp: GB_GROUP }, data: { latencyMs: 12, model: 'opus' } },
+      { event: 'ai.request', level: 'error', ids: { userEmail: 'alice@e.com', grp: GB_GROUP }, data: { latencyMs: 20, model: 'opus' } },
+      { event: 'ai.request', level: 'error', ids: { userEmail: 'alan@e.com', grp: GB_GROUP }, data: { latencyMs: 33 } },
+      { event: 'ai.request', level: 'info', ids: { userEmail: 'bob@e.com', grp: GB_GROUP }, data: { latencyMs: 5 } },
+    ];
+    const r = await req(stack1.port, 'POST', '/v1/logs', {
+      headers: { 'content-type': 'application/json', ...auth(KEY_A) },
+      body: JSON.stringify(batch),
+    });
+    assert.equal(r.status, 202, r.text);
+
+    // Wait for the whole WAL (the original 250 + this batch) to drain.
+    await pollHealthz(
+      stack1.port,
+      (x) => x.flusher.caughtUp && x.flusher.flushedTotal >= TOTAL + batch.length,
+      'groupby batch to drain',
+    );
+
+    // Wide window covering every ingested doc (server clock starts at BASE_ISO).
+    const win = `from=${encodeURIComponent(BASE_ISO)}&to=${encodeURIComponent('2026-06-11T12:00:00.000Z')}`;
+    const facets = await getJson(stack1.port, `/v1/facets?app=appA&${win}`);
+    // appA docs carry ids {runId,n} (the 250 seed) plus {userEmail,grp} (this batch).
+    for (const k of ['runId', 'n', 'userEmail', 'grp']) {
+      assert.ok(facets.idsKeys.includes(k), `idsKeys missing ${k}: ${facets.idsKeys}`);
+    }
+    assert.deepEqual(facets.idsKeys, facets.idsKeys.slice().sort(), 'idsKeys must be sorted');
+    for (const p of ['latencyMs', 'status', 'costUsd', 'model']) {
+      assert.ok(facets.dataPaths.includes(p), `dataPaths missing ${p}: ${facets.dataPaths}`);
+    }
+    assert.deepEqual(facets.window, { from: BASE_ISO, to: '2026-06-11T12:00:00.000Z' });
+  });
+
+  await t.test('groupby by ids.userEmail with level=error counts correctly; like filters values', async () => {
+    const win = `from=${encodeURIComponent(BASE_ISO)}&to=${encodeURIComponent('2026-06-11T12:00:00.000Z')}`;
+    // Scope to this batch via ids.grp so the 250-doc seed (which has no userEmail)
+    // doesn't add a null-keyed group; level=error keeps alice x2 and alan x1.
+    const gb = await getJson(
+      stack1.port,
+      `/v1/groupby?by=ids.userEmail&level=error&ids.grp=${GB_GROUP}&${win}`,
+    );
+    assert.equal(gb.by, 'ids.userEmail');
+    assert.equal(gb.total, 3); // alice(2) + alan(1); bob is level=info, excluded
+    assert.deepEqual(gb.groups, [
+      { value: 'alice@e.com', count: 2 },
+      { value: 'alan@e.com', count: 1 },
+    ]);
+    assert.equal(gb.otherCount, 0);
+
+    // like='al' is a case-insensitive regex over the grouped values: alice + alan.
+    const liked = await getJson(
+      stack1.port,
+      `/v1/groupby?by=ids.userEmail&level=error&ids.grp=${GB_GROUP}&like=al&${win}`,
+    );
+    assert.deepEqual(
+      liked.groups.map((g) => g.value).sort(),
+      ['alan@e.com', 'alice@e.com'],
+    );
+    assert.equal(liked.total, 3);
+
+    // limit collapses the tail into otherCount.
+    const limited = await getJson(
+      stack1.port,
+      `/v1/groupby?by=ids.userEmail&level=error&ids.grp=${GB_GROUP}&limit=1&${win}`,
+    );
+    assert.deepEqual(limited.groups, [{ value: 'alice@e.com', count: 2 }]);
+    assert.equal(limited.otherCount, 1); // alan
+  });
+
   await t.test('checkpoint-reset replay is idempotent against real Mongo (E11000 path)', async () => {
     await stack1.shutdown();
     stack1Down = true;

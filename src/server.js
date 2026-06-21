@@ -21,9 +21,13 @@ import { loadCheckpoint } from './wal/checkpoint.js';
 import { backlogBytes } from './wal/reader.js';
 import { createFlusher } from './flusher.js';
 import { connectMongo, ensureIndexes } from './mongo.js';
+import { ensureProjectIndexes, listProjects, createProject, updateProject, deleteProject, validateProjectInput, resolveProjectApps } from './projects.js';
 import { parseLogsQuery, runLogsQuery } from './query/logs.js';
 import { parseStatsQuery, runStats } from './query/stats.js';
 import { parseEventsQuery, runEvents } from './query/events.js';
+import { parseFacetsQuery, runFacets } from './query/facets.js';
+import { parseGroupByQuery, runGroupBy } from './query/groupby.js';
+import { parseJobsQuery, runJobs } from './query/jobs.js';
 
 // Read once at startup (C11). Buffer, so content-length is exact bytes.
 const UI_HTML = readFileSync(new URL('./ui/index.html', import.meta.url));
@@ -56,7 +60,7 @@ function healthErrorCategory(msg) {
 }
 
 export function buildApp(config, deps) {
-  const { keyring, walWriter, flusher, getCollection, now } = deps;
+  const { keyring, walWriter, flusher, getCollection, getProjectsCollection, now } = deps;
   const router = createRouter();
 
   // Admission-time WAL budget accounting. walWriter.totalBytes() only reflects
@@ -91,6 +95,78 @@ export function buildApp(config, deps) {
     }
     return collection;
   }
+
+  // Pull an optional ?project=<slug> out of the query, resolve it to member apps,
+  // and remove it so the per-endpoint parsers (which 400 on unknown params) never
+  // see it. Returns { ok, apps }: apps is undefined (no scope) or an array, or the
+  // call already sent 400 (unknown project) / 503 (no projects storage).
+  async function resolveScope(url, res) {
+    const slug = url.searchParams.get('project');
+    if (slug === null) return { ok: true, apps: undefined };
+    url.searchParams.delete('project');
+    const pc = getProjectsCollection?.();
+    if (!pc) { sendError(res, 503, 'storage unavailable'); return { ok: false }; }
+    const apps = await resolveProjectApps(pc, slug, { maxTimeMS: config.queryMaxTimeMs });
+    if (apps === null) { sendError(res, 400, `unknown project "${slug}"`); return { ok: false }; }
+    return { ok: true, apps };
+  }
+
+  // Project-registry routes. Per design, a read key suffices for list AND mutate
+  // (the read key already exposes all logs, so project metadata is not the weakest
+  // link). Returns the projects collection or null after sending 401/503.
+  function projectsGate(req, res) {
+    const principal = keyring.authenticate(req.headers.authorization);
+    if (!canRead(principal)) { unauthorized(res); return null; }
+    const pc = getProjectsCollection?.();
+    if (!pc) { sendError(res, 503, 'storage unavailable'); return null; }
+    return pc;
+  }
+
+  async function readJsonBody(req, res) {
+    const body = await readBody(req, config.maxBodyBytes);
+    if (!body.ok) { sendError(res, body.status, 'request body too large'); return undefined; }
+    try { return JSON.parse(body.buffer.toString('utf8')); }
+    catch { sendError(res, 400, 'request body is not valid JSON'); return undefined; }
+  }
+
+  router.add('GET', '/v1/projects', async (req, res) => {
+    const pc = projectsGate(req, res); if (!pc) return;
+    sendJson(res, 200, { projects: await listProjects(pc, { maxTimeMS: config.queryMaxTimeMs }) });
+  });
+
+  router.add('POST', '/v1/projects', async (req, res) => {
+    const pc = projectsGate(req, res); if (!pc) return;
+    const raw = await readJsonBody(req, res); if (raw === undefined) return;
+    const v = validateProjectInput(raw, { partial: false });
+    if (!v.ok) return sendError(res, 400, v.error);
+    const created = await createProject(pc, v.value, { now });
+    if (!created.ok) return sendError(res, 409, 'project name already exists');
+    sendJson(res, 201, created.value);
+  });
+
+  router.add('PATCH', '/v1/projects', async (req, res) => {
+    const pc = projectsGate(req, res); if (!pc) return;
+    const raw = await readJsonBody(req, res); if (raw === undefined) return;
+    if (!raw || typeof raw !== 'object' || typeof raw.slug !== 'string' || raw.slug.length === 0) {
+      return sendError(res, 400, 'slug is required');
+    }
+    const { slug, ...rest } = raw;
+    const v = validateProjectInput(rest, { partial: true });
+    if (!v.ok) return sendError(res, 400, v.error);
+    const updated = await updateProject(pc, slug, v.value, { now });
+    if (updated.notFound) return sendError(res, 404, 'project not found');
+    if (updated.conflict) return sendError(res, 409, 'project name already exists');
+    sendJson(res, 200, updated.value);
+  });
+
+  router.add('DELETE', '/v1/projects', async (req, res, url) => {
+    const pc = projectsGate(req, res); if (!pc) return;
+    const slug = url.searchParams.get('slug');
+    if (!slug) return sendError(res, 400, 'slug query parameter is required');
+    const ok = await deleteProject(pc, slug);
+    if (!ok) return sendError(res, 404, 'project not found');
+    res.writeHead(204); res.end();
+  });
 
   router.add('GET', '/healthz', async (req, res) => {
     const checkpoint = await loadCheckpoint(config.walDir);
@@ -191,25 +267,67 @@ export function buildApp(config, deps) {
   router.add('GET', '/v1/logs', async (req, res, url) => {
     const collection = readGate(req, res);
     if (!collection) return;
+    const scope = await resolveScope(url, res);
+    if (!scope.ok) return;
     const parsed = parseLogsQuery(url.searchParams);
     if (!parsed.ok) return sendError(res, 400, parsed.error);
+    parsed.value.apps = scope.apps;
     sendJson(res, 200, await runLogsQuery(collection, parsed.value, { maxTimeMS: config.queryMaxTimeMs }));
   });
 
   router.add('GET', '/v1/stats', async (req, res, url) => {
     const collection = readGate(req, res);
     if (!collection) return;
+    const scope = await resolveScope(url, res);
+    if (!scope.ok) return;
     const parsed = parseStatsQuery(url.searchParams);
     if (!parsed.ok) return sendError(res, 400, parsed.error);
+    parsed.value.apps = scope.apps;
     sendJson(res, 200, await runStats(collection, parsed.value, { maxTimeMS: config.queryMaxTimeMs }));
   });
 
   router.add('GET', '/v1/events', async (req, res, url) => {
     const collection = readGate(req, res);
     if (!collection) return;
+    const scope = await resolveScope(url, res);
+    if (!scope.ok) return;
     const parsed = parseEventsQuery(url.searchParams);
     if (!parsed.ok) return sendError(res, 400, parsed.error);
+    parsed.value.apps = scope.apps;
     sendJson(res, 200, await runEvents(collection, parsed.value, { maxTimeMS: config.queryMaxTimeMs }));
+  });
+
+  router.add('GET', '/v1/facets', async (req, res, url) => {
+    const collection = readGate(req, res);
+    if (!collection) return;
+    const scope = await resolveScope(url, res);
+    if (!scope.ok) return;
+    const parsed = parseFacetsQuery(url.searchParams);
+    if (!parsed.ok) return sendError(res, 400, parsed.error);
+    parsed.value.apps = scope.apps;
+    sendJson(res, 200, await runFacets(collection, parsed.value, { maxTimeMS: config.queryMaxTimeMs }));
+  });
+
+  router.add('GET', '/v1/groupby', async (req, res, url) => {
+    const collection = readGate(req, res);
+    if (!collection) return;
+    const scope = await resolveScope(url, res);
+    if (!scope.ok) return;
+    const parsed = parseGroupByQuery(url.searchParams);
+    if (!parsed.ok) return sendError(res, 400, parsed.error);
+    parsed.value.apps = scope.apps;
+    sendJson(res, 200, await runGroupBy(collection, parsed.value, { maxTimeMS: config.queryMaxTimeMs }));
+  });
+
+  router.add('GET', '/v1/jobs', async (req, res, url) => {
+    const collection = readGate(req, res);
+    if (!collection) return;
+    const scope = await resolveScope(url, res);
+    if (!scope.ok) return;
+    const parsed = parseJobsQuery(url.searchParams);
+    if (!parsed.ok) return sendError(res, 400, parsed.error);
+    parsed.value.apps = scope.apps;
+    sendJson(res, 200, await runJobs(collection, parsed.value, config.jobsEventPrefixes, { maxTimeMS: config.queryMaxTimeMs }));
   });
 
   router.add('GET', '/', (req, res) => {
@@ -227,6 +345,33 @@ export function buildApp(config, deps) {
       else res.destroy();
     });
   });
+
+  // Socket hardening. The POST /v1/logs admission gate reserves a request's
+  // declared content-length in pendingBytes the instant it commits to appending
+  // and only releases it once readBody settles (success or abort). Node's default
+  // requestTimeout (300_000ms) lets a client that declares a large body and then
+  // trickles or stalls it pin that reservation for ~5 minutes, forcing honest
+  // concurrent writers to 429 'wal budget exceeded'. Capping requestTimeout (whole
+  // request) and headersTimeout (header phase) to conservative finite budgets
+  // makes the server reap a stalled upload in seconds — Node answers 408 / resets
+  // the socket, readBody's close/abort handler fires, and the finally releases
+  // pendingBytes. Both are config-driven (TIMBER_REQUEST_TIMEOUT_MS /
+  // TIMBER_HEADERS_TIMEOUT_MS) and never 0 (0 = unlimited, which reintroduces the
+  // bug).
+  server.requestTimeout = config.requestTimeoutMs;
+  server.headersTimeout = config.headersTimeoutMs;
+  // CRITICAL: Node only sweeps for requestTimeout/headersTimeout violations once
+  // per connectionsCheckingInterval (default 30_000ms). With the default, a small
+  // requestTimeout is effectively ignored until the next 30s tick — the stalled
+  // upload would keep its reservation for up to ~30s regardless of a 400ms
+  // requestTimeout. We tighten the sweep to a quarter of the smaller timeout
+  // (floored at 100ms so we never busy-spin) so reaping actually tracks the
+  // configured budget: e.g. requestTimeout=30_000 sweeps ~every 3.75s; the test's
+  // requestTimeout=400 sweeps ~every 100ms and reaps in well under a second.
+  server.connectionsCheckingInterval = Math.max(
+    100,
+    Math.floor(Math.min(config.requestTimeoutMs, config.headersTimeoutMs) / 4),
+  );
 
   async function shutdown() {
     if (server.listening) {
@@ -267,8 +412,10 @@ export async function main() {
 
   let client = null;
   let collection = null;
+  let projectsCollection = null;
   let stopping = false;
   const getCollection = () => collection;
+  const getProjectsCollection = () => projectsCollection;
 
   const flusher = createFlusher({
     walDir: config.walDir,
@@ -283,6 +430,7 @@ export async function main() {
     walWriter,
     flusher,
     getCollection,
+    getProjectsCollection,
     now: () => new Date(),
   });
 
@@ -305,9 +453,12 @@ export async function main() {
             collectionName: config.mongoCollectionName,
           });
           await ensureIndexes(conn.collection);
+          const projects = conn.client.db(config.mongoDbName).collection(config.mongoProjectsCollectionName);
+          await ensureProjectIndexes(projects);
           client = conn.client;
           collection = conn.collection;
-          log(`mongo connected (db=${config.mongoDbName} collection=${config.mongoCollectionName})`);
+          projectsCollection = projects;
+          log(`mongo connected (db=${config.mongoDbName} collection=${config.mongoCollectionName}, projects=${config.mongoProjectsCollectionName})`);
         } catch (err) {
           log(`mongo connect failed: ${err?.message ?? err} — retrying in 5s`);
           await new Promise((r) => setTimeout(r, 5000));

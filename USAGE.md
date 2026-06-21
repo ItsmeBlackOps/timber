@@ -84,7 +84,7 @@ curl -s -X POST "$TIMBER_URL/v1/logs" \
 | `ts` | optional sender-clock timestamp, must be `Date.parse`-able. Server always stamps `receivedAt` itself |
 | `message` | optional string; silently truncated to 512 chars |
 | `ids` | optional object, ≤ 10 keys; values string/number/boolean (coerced to strings). Correlation ids: `requestId`, `taskId`, … |
-| `data` | optional object, any JSON, ≤ 16 KB serialized. Oversize ⇒ stored as `{"_truncated":true,"_originalBytes":n,"_head":"<first 4096 chars>"}` |
+| `data` | optional object, any JSON, ≤ `TIMBER_MAX_DATA_KB` serialized (default 64 KB). Oversize ⇒ stored as `{"_truncated":true,"_originalBytes":n,"_head":"<first 4096 chars>"}`. Fits full request/response payloads; multi-MB blobs should still be sent as IDs |
 
 Any other top-level key ⇒ the whole batch is rejected with `400`. The server adds
 `app`, `env` (from the key), `receivedAt`, `expiresAt` (per-level TTL) and `_id`.
@@ -155,7 +155,7 @@ An item is the full stored doc, dates as ISO strings:
 
 > **`q` regex safety (ReDoS policy).** `q` is a user-supplied regex evaluated server-side over `message`, and a read key is shared broadly (incl. AI assistants), so two defenses apply in depth:
 > 1. **Parse-time rejection** of catastrophic-backtracking patterns: a capture/non-capture group immediately followed by an unbounded quantifier whose body is itself unbounded — e.g. `(a+)+`, `(a*)*`, `(.*)+`, `(\d+){2,}`, `(?:a+)+`, `((a+)+)+` — is rejected with `400 {"error":"q rejected: nested quantifiers risk catastrophic backtracking"}`. This is a conservative heuristic: ordinary searches (`timeout`, `^GET `, `user.*not found`, `(read|write) key`, `status=4\d\d`) are unaffected.
-> 2. **Execution-time cap**: every read query (`/v1/logs`, `/v1/stats`, `/v1/events`) runs with MongoDB `maxTimeMS` = `TIMBER_QUERY_MAX_TIME_MS` (default `5000`, `0` disables). This bounds any backtracking that slips past the heuristic **and** plain unindexed collection scans, so no single read can pin a Mongo worker. `/v1/logs` has no mandatory time window, which makes the cap the load-bearing protection for full-scan queries.
+> 2. **Execution-time cap**: every read query (`/v1/logs`, `/v1/stats`, `/v1/events`, `/v1/facets`, `/v1/groupby`, `/v1/projects`, `/v1/jobs`) runs with MongoDB `maxTimeMS` = `TIMBER_QUERY_MAX_TIME_MS` (default `5000`, `0` disables). This bounds any backtracking that slips past the heuristic **and** plain unindexed collection scans, so no single read can pin a Mongo worker. `/v1/logs` and `/v1/groupby` have no mandatory time window, which makes the cap the load-bearing protection for their full-scan queries (`/v1/groupby` in particular can run an unbounded full-collection aggregation).
 
 ```bash
 # AI calls slower than 30 s in the last 24 h
@@ -282,6 +282,152 @@ curl -s "$TIMBER_URL/v1/events?app=scraper" -H "Authorization: Bearer $TIMBER_KE
 
 ---
 
+## Facet keys — `GET /v1/facets` (read or write key)
+
+Which `ids.<key>` and `data.<path>` keys actually occur in a time window — so a UI
+(or you) can discover the correlation ids and payload fields available to filter on
+without knowing the schema up front. Params: `from`/`to` (ISO-8601 or epoch-ms;
+default: last 24 h), `app` (exact). Unknown params ⇒ `400`.
+
+```bash
+curl -s "$TIMBER_URL/v1/facets?app=dailyDashboard&from=2026-06-11T00:00:00Z&to=2026-06-12T00:00:00Z" \
+  -H "Authorization: Bearer $TIMBER_KEY"
+```
+
+```json
+{
+  "window": { "from": "2026-06-11T00:00:00.000Z", "to": "2026-06-12T00:00:00.000Z" },
+  "idsKeys": ["requestId", "taskId", "userEmail"],
+  "dataPaths": ["costUsd", "latencyMs", "model", "status"]
+}
+```
+
+- `window` — the resolved scan window (echoes the defaults when `from`/`to` are omitted).
+- `idsKeys` — distinct keys seen under `ids` across matching events, sorted.
+- `dataPaths` — distinct top-level keys seen under `data`, sorted.
+
+Use a discovered key to drill in with `/v1/logs` (`ids.userEmail=…`) or to break a
+window down with `/v1/groupby` (below).
+
+---
+
+## Group & count — `GET /v1/groupby` (read or write key)
+
+Count documents grouped by a single field, over the **same filter surface as
+`/v1/logs`** — for "errors by user", "volume by service", "spend by model" style
+breakdowns. Returns the top groups by count plus an `otherCount` rollup of the tail.
+
+Params:
+
+| param | meaning |
+|---|---|
+| `by` | **required** field to group on: `app`, `env`, `level`, `event`, or any `ids.<key>` / `data.<path>`. Anything else (incl. `$`-prefixed injection) ⇒ `400 {"error":"invalid by field"}` |
+| `limit` | number of groups returned, 1..100, default 20. The rest fold into `otherCount` |
+| `like` | optional case-insensitive substring filter on the **grouped values** (value autocomplete), ≤ 128 chars |
+| *filters* | every `/v1/logs` filter applies: `app`, `env`, `level`, `event`, `from`/`to`, `q`, `ids.<key>`, `data.<path>` (+ `__gte`/`__lte`). `cursor` is not accepted |
+
+```bash
+# which users hit the most errors in the last 24 h
+curl -s "$TIMBER_URL/v1/groupby?by=ids.userEmail&level=error" \
+  -H "Authorization: Bearer $TIMBER_KEY"
+```
+
+```json
+{
+  "by": "ids.userEmail",
+  "total": 137,
+  "groups": [
+    { "value": "alice@example.com", "count": 54 },
+    { "value": "bob@example.com",   "count": 31 }
+  ],
+  "otherCount": 52
+}
+```
+
+- `total` — documents matched by the filter (sum across **all** groups, before `limit`).
+- `groups` — the top `limit` groups, count-desc (ties broken by value asc).
+- `otherCount` — `total` minus the shown groups' counts (`0` when nothing was dropped).
+
+```bash
+# event volume by service (app), last hour
+curl -s "$TIMBER_URL/v1/groupby?by=app&from=2026-06-11T13:00:00Z&to=2026-06-11T14:00:00Z" \
+  -H "Authorization: Bearer $TIMBER_KEY"
+
+# spend leaders by model, narrowed to model names containing "opus"
+curl -s "$TIMBER_URL/v1/groupby?by=data.model&like=opus&event=ai." \
+  -H "Authorization: Bearer $TIMBER_KEY"
+```
+
+---
+
+## Projects, `GET/POST/PATCH/DELETE /v1/projects` (read or write key)
+
+A **project** groups one or more services (the per-key `app`) under a name, so the
+Console can scope every view to a set of services. Projects are metadata only:
+they do not change events and apply retroactively to existing logs. Any valid key
+may list and edit them.
+
+```bash
+# list
+curl -s "$TIMBER_URL/v1/projects" -H "Authorization: Bearer $TIMBER_KEY"
+# create (returns {slug,name,apps})
+curl -s -X POST "$TIMBER_URL/v1/projects" -H "Authorization: Bearer $TIMBER_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Acme Platform","apps":["web","api","worker"]}'
+# edit members (slug travels in the body)
+curl -s -X PATCH "$TIMBER_URL/v1/projects" -H "Authorization: Bearer $TIMBER_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"slug":"acme-platform","apps":["web","api"]}'
+# delete (slug in the query string)
+curl -s -X DELETE "$TIMBER_URL/v1/projects?slug=acme-platform" -H "Authorization: Bearer $TIMBER_KEY"
+```
+
+| field | rules |
+|---|---|
+| `name` | required string, trimmed, 1..80 chars, unique (case-insensitive) |
+| `apps` | array of service names, 0..200, each 1..128 chars; duplicates removed |
+
+`slug` is derived from `name` at creation, is unique, and never changes (so shared
+URLs survive a rename). Errors: `400` bad body, `404` unknown slug, `409`
+duplicate name, `503` storage down.
+
+### Project scope on reads
+
+Add `project=<slug>` to `/v1/logs`, `/v1/stats`, `/v1/events`, `/v1/facets`,
+`/v1/groupby`, or `/v1/jobs` to scope results to that project's services
+(`app $in {...}`). Combine with `app=<one>` to drill into a single member service.
+An unknown slug returns `400`.
+
+```bash
+curl -s "$TIMBER_URL/v1/logs?project=acme-platform&level=warn,error" \
+  -H "Authorization: Bearer $TIMBER_KEY"
+```
+
+## Jobs, `GET /v1/jobs` (read or write key)
+
+Rolls up scheduled-job events (those whose `event` starts with a prefix in
+`TIMBER_JOBS_EVENT_PREFIX`, default `cron.`) into one row per job over a time
+window (default last 24h). Params: `from`, `to`, `app`, `project`.
+
+```bash
+curl -s "$TIMBER_URL/v1/jobs?project=acme-platform&from=2026-06-20T00:00:00Z" \
+  -H "Authorization: Bearer $TIMBER_KEY"
+```
+
+```json
+{
+  "jobs": [
+    {"name":"cron.nightly-report","lastRunAt":"2026-06-21T03:00:01Z","lastStatus":"ok",
+     "runs":42,"failures":3,"successRate":0.93,"p50Ms":1200,"p95Ms":4800}
+  ],
+  "window": {"from":"2026-06-20T00:00:00Z","to":"2026-06-21T00:00:00Z"}
+}
+```
+
+A run counts as `failed` when its `level` is `error` or `data.status` is one of
+`error`/`failed`/`failure`; duration comes from `data.latencyMs`. Jobs are sorted
+by run count; a job with no numeric duration omits the percentiles.
+
 ## Health — `GET /healthz` (no auth)
 
 ```bash
@@ -366,6 +512,7 @@ secret-looking keys before sending.
 | `MONGODB_URI` | *(unset)* | Mongo/Atlas connection string. Unset ⇒ ingest works (WAL only), queries `503`, flusher idles |
 | `TIMBER_DB` | `appLogs` | Mongo database name |
 | `TIMBER_COLLECTION` | `events` | Mongo collection name |
+| `TIMBER_MAX_DATA_KB` | `64` | max serialized `data` size per event (KB), clamp 1..15360; oversize truncates to a stored head. Raise to fit larger request/response payloads |
 | `TIMBER_KEYS` | `[]` | JSON array `[{key,app,env,mode}]`, `mode` = `write`\|`read`. Empty ⇒ startup warning, every authed request `401` |
 | `TIMBER_WAL_DIR` | `./wal-data` | WAL directory (`/data/wal` in the Docker image) |
 | `TIMBER_WAL_BUDGET_MB` | `2048` | WAL disk cap; beyond it ingest answers `429` + `Retry-After` |
@@ -380,6 +527,9 @@ secret-looking keys before sending.
 | `TIMBER_FLUSH_INTERVAL_MS` | `200` | flusher idle poll interval |
 | `TIMBER_QUERY_MAX_TIME_MS` | `5000` | server-side `maxTimeMS` cap on read queries (regex/scan guard); `0` disables |
 | `TIMBER_CLUSTER` | `0` | `>0` forks N workers (`node:cluster`), one WAL subdir per worker. Off by default |
+| `WATCHTOWER_POLL_INTERVAL` | `300` | compose only, seconds between Docker Hub checks by the bundled `watchtower` auto-deploy service. Lower = faster rollout, more registry pulls |
+| `TIMBER_PROJECTS_COLLECTION` | `projects` | Mongo collection holding project metadata (name + member services) |
+| `TIMBER_JOBS_EVENT_PREFIX` | `cron.` | comma-separated event-name prefixes treated as jobs by `/v1/jobs` |
 
 ---
 

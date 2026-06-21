@@ -1,0 +1,51 @@
+/* Timber Console design tokens (light default + dark via [data-theme=dark]).
+   Task F4 owns/refines this; values are the approved palette. */
+:root {
+  --tb-bg: #F6F8FB;
+  --tb-surface: #FFFFFF;
+  --tb-2: #EEF1F6;
+  --tb-border: #E2E7EE;
+  --tb-text: #1A1E27;
+  --tb-mut: #5C6573;
+  --tb-acc: #4F46E5;
+  /* Level tokens are darkened from the original palette so they clear WCAG AA
+     (4.5:1) as text on the white surface (the LogRow level chip paints them as
+     11px text) AND on the selected LevelChip's 16% tint. The lighter originals
+     (#6B7280/#2563EB/#B7791F/#DC2626) all fell below 4.5:1 in light mode. Dark
+     theme is unchanged — it already passes comfortably. */
+  --tb-debug: #4B5563;
+  --tb-info: #1D4ED8;
+  --tb-warn: #8A5A00;
+  --tb-error: #B91C1C;
+  --tb-ok: #16A34A;
+  /* JSON inspector: string-value color is the most common leaf, so it must hit
+     AA (4.5:1) as body text, not just glance-able like the --tb-ok status dot.
+     #15803D = 5.02:1 on #FFFFFF surface / 4.71:1 on #F6F8FB bg (vs --tb-ok 3.3:1). */
+  --tb-string: #15803D;
+  /* Search highlight: a light "highlighter" amber with dark text. The matched
+     text must be MORE readable than its surroundings, not less. #1A1E27 on
+     #FDE68A = 13.4:1 (vs the old --tb-bg-on---tb-warn 3.42:1). */
+  --tb-mark-bg: #FDE68A;
+  --tb-mark-fg: #1A1E27;
+}
+:root[data-theme="dark"] {
+  --tb-bg: #0B0C10;
+  --tb-surface: #131620;
+  --tb-2: #1A1F2C;
+  --tb-border: #262C3B;
+  --tb-text: #E7E9EE;
+  --tb-mut: #8B93A6;
+  --tb-acc: #838CF7;
+  --tb-debug: #7E889B;
+  --tb-info: #5B95F7;
+  --tb-warn: #E6A23C;
+  --tb-error: #F06A78;
+  --tb-ok: #3FB950;
+  /* Dark already clears AA: #3FB950 string = 7.11:1 on surface; mark #E7E9EE on
+     #854D0E = 5.64:1. Kept on-hue with the green/amber family above. */
+  --tb-string: #3FB950;
+  --tb-mark-bg: #854D0E;
+  --tb-mark-fg: #E7E9EE;
+}
+html, body, #root { height: 100%; }
+body { margin: 0; background: var(--tb-bg); color: var(--tb-text); font-family: ui-sans-serif, system-ui, sans-serif; }

@@ -105,6 +105,23 @@ describe('parseLogsQuery — param → filter mapping', () => {
     });
   });
 
+  test('an inverted window (from > to) is a 400, not a silent empty result', () => {
+    const r = parse('from=2026-06-18T00:00:00.000Z&to=2026-06-17T00:00:00.000Z');
+    assert.equal(r.ok, false);
+    assert.match(r.error, /from/);
+  });
+
+  test('an empty window (from === to) is a 400 too ($gte/$lt can never overlap)', () => {
+    const r = parse('from=2026-06-17T00:00:00.000Z&to=2026-06-17T00:00:00.000Z');
+    assert.equal(r.ok, false);
+    assert.match(r.error, /from/);
+  });
+
+  test('a non-inverted equal-instant boundary is unaffected: only-from / only-to still parse', () => {
+    assert.equal(parse('from=2026-06-17T00:00:00.000Z').ok, true);
+    assert.equal(parse('to=2026-06-17T00:00:00.000Z').ok, true);
+  });
+
   test('ids.<key> → exact string match on dotted path', () => {
     assert.deepEqual(parse('ids.requestId=r-42').value.filter, { 'ids.requestId': 'r-42' });
   });
@@ -151,14 +168,19 @@ describe('parseLogsQuery — param → filter mapping', () => {
 });
 
 describe('parseLogsQuery — q ReDoS guard (defense-in-depth)', () => {
-  // Nested-quantifier catastrophic-backtracking patterns reachable with a read
-  // key must be rejected at parse time, BEFORE they reach Mongo's PCRE2 engine.
-  // These are all syntactically valid (pass `new RegExp`) and under the 256-char
-  // cap, so this parse-time guard is the first of two layers. The second layer
-  // — the maxTimeMS cap applied in runLogsQuery — is the universal backstop for
-  // the ReDoS classes this conservative heuristic deliberately does NOT try to
-  // classify (alternation overlap like `(a|a)+`, flat optional chains like
-  // `a?a?...aaaa`); see the runLogsQuery maxTimeMS tests below.
+  // Catastrophic-backtracking patterns reachable with a read key must be
+  // rejected at parse time, BEFORE they reach Mongo's PCRE2 engine. These are
+  // all syntactically valid (pass `new RegExp`) and under the 256-char cap, so
+  // this parse-time guard is the first of two layers. The second layer — the
+  // maxTimeMS cap applied in runLogsQuery — is the universal backstop for the
+  // residual classes this heuristic still does NOT try to classify (e.g. flat
+  // optional chains like `a?a?...aaaa`); see the runLogsQuery maxTimeMS tests.
+  //
+  // Three exponential families are caught: (1) nested quantifiers `(a+)+`;
+  // (2) a quantified group whose body is a top-level alternation with
+  // overlapping branches `(a|a)+`, `(a|ab)*`, `(a|a){2,}` — the prefix-overlap
+  // makes each input char ambiguous across branches; and (3) runs of adjacent
+  // unbounded quantifiers over the same atom `a+a+a+...`.
   const evil = [
     ['nested + on +group', '(a+)+$'],
     ['nested * on +group', '(a+)*'],
@@ -171,6 +193,15 @@ describe('parseLogsQuery — q ReDoS guard (defense-in-depth)', () => {
     ['noncapturing nested', '(?:a+)+'],
     ['quantified backreference group', '(ab+)+c'],
     ['doubly nested quantifier', '((a+)+)+'],
+    // Alternation-overlap families (previously slipped through the guard):
+    ['quantified identical-branch alternation', '(a|a)+$'],
+    ['quantified prefix-overlap alternation', '(a|aa)+$'],
+    ['star prefix-overlap alternation', '(a|ab)*c'],
+    ['range-quantified identical alternation', '(a|a){2,}$'],
+    ['noncapturing overlap alternation', '(?:a|a)+$'],
+    // Adjacent-unbounded-quantifier run over one atom:
+    ['adjacent + quantifier run', 'a+a+a+a+a+a+a+a+a+a+$'],
+    ['adjacent * quantifier run', 'a*a*a*a*a*a*a*a*a*a*$'],
   ];
   for (const [name, pattern] of evil) {
     test(`rejects ${name}: /${pattern}/`, () => {

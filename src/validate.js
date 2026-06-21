@@ -10,6 +10,34 @@ const DAY_MS = 86_400_000;
 const isPlainObject = (v) => typeof v === 'object' && v !== null && !Array.isArray(v);
 const invalid = (error) => ({ ok: false, error });
 
+// Bound nesting depth with an explicit, NON-recursive walk before any
+// JSON.stringify. V8's JSON.stringify recurses, so a deeply-nested but tiny
+// payload (e.g. a ~6KB nested array, well under the size cap) overflows the call
+// stack and throws RangeError — turning an in-spec request into a 500 and making
+// the size guard unreachable. The size cap protects breadth; this protects depth.
+// `root` itself is depth 1; each nested object/array adds a level. Returns true
+// when any path is deeper than `maxDepth`.
+function exceedsDepth(root, maxDepth) {
+  // Stack of [node, depth]; only objects/arrays are pushed (scalars are leaves).
+  const stack = [[root, 1]];
+  while (stack.length > 0) {
+    const [node, depth] = stack.pop();
+    if (depth > maxDepth) return true;
+    if (Array.isArray(node)) {
+      for (let i = 0; i < node.length; i++) {
+        const child = node[i];
+        if (child !== null && typeof child === 'object') stack.push([child, depth + 1]);
+      }
+    } else {
+      for (const key of Object.keys(node)) {
+        const child = node[key];
+        if (child !== null && typeof child === 'object') stack.push([child, depth + 1]);
+      }
+    }
+  }
+  return false;
+}
+
 // Contract C3: any charCode < 32 in `event` is invalid.
 function hasControlChars(s) {
   for (let i = 0; i < s.length; i++) {
@@ -19,7 +47,12 @@ function hasControlChars(s) {
 }
 
 export function validateEnvelope(raw, limits) {
-  const { maxMessageChars = 512, maxIdsKeys = 10, maxDataBytes = 16_384 } = limits ?? {};
+  const {
+    maxMessageChars = 512,
+    maxIdsKeys = 10,
+    maxDataBytes = 16_384,
+    maxDataDepth = 32,
+  } = limits ?? {};
 
   if (!isPlainObject(raw)) return invalid('event envelope must be a JSON object');
   for (const key of Object.keys(raw)) {
@@ -57,6 +90,7 @@ export function validateEnvelope(raw, limits) {
 
   if (raw.ids !== undefined) {
     if (!isPlainObject(raw.ids)) return invalid('ids must be a plain object');
+    if (exceedsDepth(raw.ids, maxDataDepth)) return invalid(`ids nesting exceeds ${maxDataDepth} levels`);
     const keys = Object.keys(raw.ids);
     if (keys.length > maxIdsKeys) return invalid(`ids exceeds ${maxIdsKeys} keys`);
     const ids = {};
@@ -73,6 +107,9 @@ export function validateEnvelope(raw, limits) {
 
   if (raw.data !== undefined) {
     if (!isPlainObject(raw.data)) return invalid('data must be a plain object');
+    // Depth guard MUST precede JSON.stringify: the serializer recurses and would
+    // otherwise overflow the stack on a deeply-nested payload (see exceedsDepth).
+    if (exceedsDepth(raw.data, maxDataDepth)) return invalid(`data nesting exceeds ${maxDataDepth} levels`);
     const serialized = JSON.stringify(raw.data);
     value.data =
       serialized.length > maxDataBytes

@@ -1,0 +1,18 @@
+@import "tailwindcss";
+@import "./theme/tokens.css";
+
+/* Global keyboard focus ring (WCAG 2.4.7). The console restyles many native
+   controls (borderless JsonTree toggles, link-style buttons, accent-filled
+   tabs/chips) where the UA default outline is easily lost; give every focusable
+   element a token-driven, offset ring that reads in both themes. :focus-visible
+   keeps it keyboard-only, so pointer interaction stays clean. */
+*:focus-visible {
+  outline: 2px solid var(--tb-acc);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+/* Belt-and-suspenders for engines without :focus-visible support: never leave a
+   plain :focus with no indicator. */
+*:focus:not(:focus-visible) {
+  outline: none;
+}

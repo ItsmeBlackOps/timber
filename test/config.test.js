@@ -34,7 +34,7 @@ test('defaults: empty env yields every documented default', (t) => {
 
   assert.equal(cfg.maxBodyBytes, 1_048_576);
   assert.equal(cfg.maxBatch, 500);
-  assert.equal(cfg.maxDataBytes, 16_384);
+  assert.equal(cfg.maxDataBytes, 65_536);
   assert.equal(cfg.maxMessageChars, 512);
   assert.equal(cfg.maxIdsKeys, 10);
 });
@@ -246,4 +246,60 @@ test('key entries are normalized to exactly {key, app, env, mode}', (t) => {
     ]),
   });
   assert.deepEqual(cfg.keys, [{ key: 'k', app: 'a', env: 'e', mode: 'read' }]);
+});
+
+// Contract C-S4: per-event `data` cap is configurable via TIMBER_MAX_DATA_KB
+// (KB -> bytes). Default 64 KB (65536), clamp 1..15360 KB, non-numeric throws.
+const KB = 1024;
+
+test('maxDataBytes: default is 64 KB (65536 bytes) when TIMBER_MAX_DATA_KB unset', (t) => {
+  quietStderr(t);
+  assert.equal(loadConfig({}).maxDataBytes, 65_536);
+  assert.equal(loadConfig({}).maxDataBytes, 64 * KB);
+});
+
+test('maxDataBytes: TIMBER_MAX_DATA_KB is interpreted as KB and converted to bytes', (t) => {
+  quietStderr(t);
+  assert.equal(loadConfig({ TIMBER_MAX_DATA_KB: '256' }).maxDataBytes, 262_144);
+  assert.equal(loadConfig({ TIMBER_MAX_DATA_KB: '256' }).maxDataBytes, 256 * KB);
+  assert.equal(loadConfig({ TIMBER_MAX_DATA_KB: '1' }).maxDataBytes, 1 * KB);
+});
+
+test('maxDataBytes: clamps to the [1, 15360] KB range, never throws on out-of-range', (t) => {
+  quietStderr(t);
+  // Over the ceiling coerces down to 15360 KB (stays under Mongo's 16 MB doc limit).
+  assert.equal(loadConfig({ TIMBER_MAX_DATA_KB: '999999' }).maxDataBytes, 15_360 * KB);
+  // 0 and negative coerce up to the floor of 1 KB.
+  assert.equal(loadConfig({ TIMBER_MAX_DATA_KB: '0' }).maxDataBytes, 1 * KB);
+  assert.equal(loadConfig({ TIMBER_MAX_DATA_KB: '-5' }).maxDataBytes, 1 * KB);
+});
+
+test('maxDataBytes: non-numeric TIMBER_MAX_DATA_KB throws ConfigError naming the variable', (t) => {
+  quietStderr(t);
+  assert.throws(
+    () => loadConfig({ TIMBER_MAX_DATA_KB: 'huge' }),
+    (err) => err instanceof ConfigError && err.message.includes('TIMBER_MAX_DATA_KB'),
+  );
+});
+
+test('maxDataBytes: blank/whitespace TIMBER_MAX_DATA_KB falls back to the default', (t) => {
+  quietStderr(t);
+  assert.equal(loadConfig({ TIMBER_MAX_DATA_KB: '  ' }).maxDataBytes, 65_536);
+});
+
+test('projects + jobs config: defaults', (t) => {
+  quietStderr(t);
+  const cfg = loadConfig({});
+  assert.equal(cfg.mongoProjectsCollectionName, 'projects');
+  assert.deepEqual(cfg.jobsEventPrefixes, ['cron.']);
+});
+
+test('projects + jobs config: overrides (CSV prefixes trimmed)', (t) => {
+  quietStderr(t);
+  const cfg = loadConfig({
+    TIMBER_PROJECTS_COLLECTION: 'proj',
+    TIMBER_JOBS_EVENT_PREFIX: 'cron., job. , task.',
+  });
+  assert.equal(cfg.mongoProjectsCollectionName, 'proj');
+  assert.deepEqual(cfg.jobsEventPrefixes, ['cron.', 'job.', 'task.']);
 });

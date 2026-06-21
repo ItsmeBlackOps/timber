@@ -1,6 +1,8 @@
 // GET /v1/stats backend (contract C9): parse params, build the aggregation
 // pipeline ($dateTrunc buckets + §5.3 convention rollups), post-process buckets.
 
+import { appScope } from './scope.js';
+
 const GROUPS = ['hour', 'day'];
 const KNOWN_PARAMS = new Set(['group', 'from', 'to', 'app', 'event']);
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -37,6 +39,16 @@ export function parseStatsQuery(searchParams) {
     if (from === null) return { ok: false, error: 'from: expected ISO-8601 date or epoch milliseconds' };
   }
 
+  // Reject an inverted/empty window (from >= to) with a 400 rather than building
+  // an impossible {$gte: later, $lt: earlier} $match that silently returns zero
+  // buckets with a 200 — consistent with the unknown-parameter strictness above
+  // and with buildLogsFilter. The default window (from = to - 24h) is always
+  // valid; this only bites a caller who transposes from/to or passes a future
+  // from. Boundary is `>=`: $gte/$lt can never overlap when from === to.
+  if (from.getTime() >= to.getTime()) {
+    return { ok: false, error: 'from must be earlier than to (got an inverted or empty time window)' };
+  }
+
   const value = { group, from, to };
   const app = searchParams.get('app');
   if (app) value.app = app;
@@ -52,12 +64,12 @@ const toDouble = (input, onMissing) => ({
   $convert: { input, to: 'double', onError: onMissing, onNull: onMissing },
 });
 
-export function buildStatsPipeline({ group, from, to, app, event }) {
+export function buildStatsPipeline({ group, from, to, app, event, apps }) {
   return [
     {
       $match: {
         receivedAt: { $gte: from, $lt: to },
-        ...(app && { app }),
+        ...appScope(app, apps),
         ...(event && { event: { $regex: '^' + escapeRegex(event) } }),
       },
     },
