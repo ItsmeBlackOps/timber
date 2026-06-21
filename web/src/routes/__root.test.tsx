@@ -273,4 +273,26 @@ describe("RootShell", () => {
       expect(router.state.location.search).not.toHaveProperty("app"),
     );
   });
+
+  // ---- Projects: a URL project scope narrows the AppSwitcher --------------
+
+  it("selecting a project narrows the App switcher to its services", async () => {
+    // Default fixtures: EVENTS_RESPONSE apps = {api, worker, scheduler};
+    // PROJECTS_RESPONSE Acme (slug 'acme') = [api, worker]. So at ?project=acme
+    // the App select must offer api + worker but NOT scheduler.
+    saveSettings({ readKey: "tb_read" });
+    renderShell("/?project=acme");
+    const appSelect = await screen.findByRole("combobox", { name: "App" });
+    await waitFor(() =>
+      expect(
+        within(appSelect).getByRole("option", { name: "api" }),
+      ).toBeInTheDocument(),
+    );
+    const opts = within(appSelect)
+      .getAllByRole("option")
+      .map((o) => o.textContent);
+    expect(opts).toContain("api");
+    expect(opts).toContain("worker");
+    expect(opts).not.toContain("scheduler");
+  });
 });

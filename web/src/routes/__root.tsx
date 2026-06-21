@@ -3,8 +3,11 @@ import { Link, Outlet, useNavigate, useSearch } from "@tanstack/react-router";
 import { Settings as SettingsIcon } from "lucide-react";
 import { AppSwitcher } from "@/components/AppSwitcher";
 import { HealthDot } from "@/components/HealthDot";
+import { ManageProjectsDialog } from "@/components/ManageProjectsDialog";
+import { ProjectSwitcher } from "@/components/ProjectSwitcher";
 import { SettingsDialog } from "@/components/SettingsDialog";
 import { ThemeToggle } from "@/components/ThemeToggle";
+import { useProjects } from "@/hooks";
 import { useApplyTheme } from "@/hooks/useApplyTheme";
 import { useEvents } from "@/hooks/useEvents";
 import { useHealth } from "@/hooks/useHealth";
@@ -35,14 +38,28 @@ export function RootShell() {
   const search = useSearch({ strict: false }) as Record<string, unknown>;
   const currentApp =
     typeof search.app === "string" && search.app !== "" ? search.app : undefined;
+  // Project scope also lives in the URL search (mirrors the `app` scope above).
+  const currentProject =
+    typeof search.project === "string" && search.project !== ""
+      ? search.project
+      : undefined;
 
   // Live health (C-F8) — polled, no read key required so the dot works pre-auth.
   const healthQuery = useHealth();
   // Known apps for the scope selector (C-F8); gated on a read key inside the hook.
   const eventsQuery = useEvents();
-  const apps = Object.keys(eventsQuery.data?.apps ?? {});
+  // Configured projects (C-F8). When one is selected, the App switcher only
+  // offers that project's services so a service from another scope can't be picked.
+  const projectsQuery = useProjects();
+  const projects = projectsQuery.query.data?.projects ?? [];
+  const baseApps = Object.keys(eventsQuery.data?.apps ?? {});
+  const selectedProject = projects.find((p) => p.slug === currentProject);
+  const apps = selectedProject
+    ? baseApps.filter((a) => selectedProject.apps.includes(a))
+    : baseApps;
 
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [manageOpen, setManageOpen] = useState(false);
   const settingsTriggerRef = useRef<HTMLButtonElement>(null);
   // First run (spec §8.1): no read key configured -> open Settings so the user
   // can paste one (otherwise every data hook stays disabled and nothing loads).
@@ -74,6 +91,19 @@ export function RootShell() {
           return rest;
         }
         return { ...prev, app };
+      },
+      replace: true,
+    });
+  }
+
+  function setProject(slug: string | undefined) {
+    // Changing the project also clears any `app`: a service scoped to another
+    // project must not persist across a scope change.
+    navigate({
+      to: ".",
+      search: (prev: Record<string, unknown>) => {
+        const { app: _omitApp, project: _omitProject, ...rest } = prev;
+        return slug === undefined ? rest : { ...rest, project: slug };
       },
       replace: true,
     });
@@ -179,6 +209,12 @@ export function RootShell() {
             gap: 10,
           }}
         >
+          <ProjectSwitcher
+            projects={projects}
+            value={currentProject}
+            onChange={setProject}
+            onManage={() => setManageOpen(true)}
+          />
           <AppSwitcher apps={apps} value={currentApp} onChange={setApp} />
           <HealthDot health={healthQuery.data} />
           <ThemeToggle />
@@ -213,6 +249,10 @@ export function RootShell() {
       </main>
 
       <SettingsDialog open={settingsOpen} onClose={closeSettings} />
+      <ManageProjectsDialog
+        open={manageOpen}
+        onClose={() => setManageOpen(false)}
+      />
     </div>
   );
 }
