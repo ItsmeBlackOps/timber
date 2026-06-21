@@ -28,7 +28,10 @@
 services:
   timber:
     build: .
-    image: timber:latest   # deploy: replace with a registry ref and `docker compose pull && up -d`
+    # Local dev: `docker compose up --build` builds + tags this. On the VM, set
+    # TIMBER_IMAGE=docker.io/<user>/timber:latest in .env, then
+    # `docker compose pull && docker compose up -d` pulls the published image.
+    image: ${TIMBER_IMAGE:-timber:latest}
     # required:false (Compose >= 2.24): a missing .env degrades to a clear in-app
     # config error (startup warning + 401s) instead of a hard compose failure.
     env_file:
