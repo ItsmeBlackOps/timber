@@ -117,3 +117,14 @@ export async function resolveProjectApps(slug) {
   if (rows.length === 0) return null;
   return rows[0].apps ?? [];
 }
+
+// Read handler helper: pop `project` from the query params and resolve it to an
+// app scope. Returns undefined when no project is given (no constraint), or an
+// app array ([] when the slug is unknown => matches nothing, mirroring Mongo).
+export async function resolveScope(sp) {
+  if (!sp.has('project')) return undefined;
+  const slug = sp.get('project');
+  sp.delete('project');
+  const apps = await resolveProjectApps(slug);
+  return apps === null ? [] : apps;
+}

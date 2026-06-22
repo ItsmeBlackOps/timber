@@ -8,7 +8,7 @@ import { ttlDays, limits } from '../_lib/env.js';
 import { buildInsert } from '../_lib/ingest.js';
 import { db } from '../_lib/db.js';
 import { parseLogsQuery, runLogs } from '../_lib/sql/logs.js';
-import { resolveProjectApps } from '../_lib/projects.js';
+import { resolveScope } from '../_lib/projects.js';
 
 async function ingest(req, res) {
   const principal = requireWrite(req, res);
@@ -27,13 +27,7 @@ async function ingest(req, res) {
 async function query(req, res) {
   if (!requireRead(req, res)) return;
   const sp = new URL(req.url, 'http://localhost').searchParams;
-  let apps;
-  if (sp.has('project')) {
-    const slug = sp.get('project');
-    sp.delete('project');
-    apps = await resolveProjectApps(slug);
-    if (apps === null) apps = []; // unknown project => empty scope => no rows
-  }
+  const apps = await resolveScope(sp);
   const parsed = parseLogsQuery(sp, {});
   if (!parsed.ok) return badRequest(res, parsed.error);
   const result = await runLogs(parsed.value, apps);
