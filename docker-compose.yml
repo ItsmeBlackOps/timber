@@ -66,7 +66,10 @@ services:
       - timber-mongo:/data/db
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      # TCP probe instead of mongosh: mongosh can hang ~40s on some hosts (broken
+      # container IPv6 egress), which blocks timber startup. A direct TCP connect to
+      # mongod over IPv4 is instant and sufficient as a readiness signal.
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/127.0.0.1/27017'"]
       interval: 10s
       timeout: 5s
       retries: 5
