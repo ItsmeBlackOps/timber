@@ -9,11 +9,12 @@ import type { ProjectsResponse } from '@/lib/types'
 import { useHasReadKey } from './_shared'
 
 export function useProjects() {
+  const hasReadKey = useHasReadKey()
   const qc = useQueryClient()
   const query = useQuery<ProjectsResponse>({
     queryKey: ['projects'],
     queryFn: () => getProjects(),
-    enabled: useHasReadKey(),
+    enabled: hasReadKey,
   })
   const invalidate = () => qc.invalidateQueries({ queryKey: ['projects'] })
   const create = useMutation({ mutationFn: createProject, onSuccess: invalidate })

@@ -84,7 +84,7 @@ export async function runJobs(collection, value, prefixes, { maxTimeMS } = {}) {
       lastStatus: lastFailed ? 'failed' : 'ok',
       runs: r.runs,
       failures: r.failures,
-      successRate: r.runs ? (r.runs - r.failures) / r.runs : null,
+      successRate: r.runs ? Math.round(((r.runs - r.failures) / r.runs) * 10000) / 10000 : null,
       p50Ms: lp[0] == null ? null : lp[0],
       p95Ms: lp[1] == null ? null : lp[1],
     };

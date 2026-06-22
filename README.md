@@ -107,7 +107,7 @@ testing, and deploy notes: [`web/README.md`](web/README.md).
 Two additive read endpoints back the console's faceting — `GET /v1/facets`
 (discover `ids.*` / `data.*` field names) and `GET /v1/groupby` (counts per value,
 e.g. "errors by user"); both are documented in [USAGE.md](USAGE.md).
-Projects group services, every read endpoint accepts `project=<slug>`, and `GET /v1/jobs` rolls up scheduled-job health, all backing the Console's Projects feature.
+Projects group services, the query endpoints accept `project=<slug>`, and `GET /v1/jobs` rolls up scheduled-job health, all backing the Console's Projects feature.
 
 ## Tests & benchmarks
 

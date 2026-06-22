@@ -426,7 +426,7 @@ curl -s "$TIMBER_URL/v1/jobs?project=acme-platform&from=2026-06-20T00:00:00Z" \
 
 A run counts as `failed` when its `level` is `error` or `data.status` is one of
 `error`/`failed`/`failure`; duration comes from `data.latencyMs`. Jobs are sorted
-by run count; a job with no numeric duration omits the percentiles.
+by run count; a job with no numeric duration still includes `p50Ms`/`p95Ms` in the payload as `null`.
 
 ## Health — `GET /healthz` (no auth)
 
