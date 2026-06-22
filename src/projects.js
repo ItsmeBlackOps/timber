@@ -103,12 +103,16 @@ export async function updateProject(collection, slug, patch, { now }) {
     set.nameLower = patch.name.toLowerCase();
   }
   if (patch.apps !== undefined) set.apps = patch.apps;
+  let res;
   try {
-    await collection.updateOne({ slug }, { $set: set });
+    res = await collection.updateOne({ slug }, { $set: set });
   } catch (err) {
     if (err && err.code === 11000) return { ok: false, conflict: true };
     throw err;
   }
+  // The doc may have been deleted between the findOne and the updateOne (race); a
+  // zero match means not-found, so do not return stale merged data.
+  if (res.matchedCount === 0) return { ok: false, notFound: true };
   return { ok: true, value: toView({ ...existing, ...set }) };
 }
 
@@ -120,7 +124,9 @@ export async function deleteProject(collection, slug) {
 // Resolve a slug to its member apps for query scoping. Returns the apps array
 // (possibly empty) or null when the slug is unknown.
 export async function resolveProjectApps(collection, slug, { maxTimeMS } = {}) {
-  const doc = await collection.findOne({ slug }, { projection: { apps: 1 } });
+  const opts = { projection: { apps: 1 } };
+  if (Number.isFinite(maxTimeMS) && maxTimeMS > 0) opts.maxTimeMS = maxTimeMS;
+  const doc = await collection.findOne({ slug }, opts);
   if (!doc) return null;
   return doc.apps ?? [];
 }

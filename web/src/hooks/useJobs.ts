@@ -8,6 +8,7 @@ import type { TimeRange } from './useStats'
 import { useHasReadKey } from './_shared'
 
 export function useJobs(range: TimeRange, project?: string, app?: string) {
+  const hasReadKey = useHasReadKey()
   return useQuery<JobsResponse>({
     queryKey: ['jobs', range.from, range.to, project ?? null, app ?? null],
     queryFn: () => {
@@ -18,6 +19,6 @@ export function useJobs(range: TimeRange, project?: string, app?: string) {
       if (app) p.set('app', app)
       return getJobs(p)
     },
-    enabled: useHasReadKey(),
+    enabled: hasReadKey,
   })
 }
