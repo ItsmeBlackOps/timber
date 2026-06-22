@@ -107,44 +107,50 @@ are matched first) so API requests are never swallowed by `index.html`.
 
 ## 5. Data model (Neon Postgres)
 
+The schema mirrors the existing log envelope exactly. The allowed envelope keys
+are `event, level, ts, message, ids, data` (`src/validate.js`), so there are no
+separate `service`, `user_id`, or `latency` columns: a "service" is the per-key
+`app`, and identifiers/metrics live inside the `ids` and `data` JSONB columns.
+
 ```sql
 CREATE TABLE IF NOT EXISTS events (
   id           BIGSERIAL PRIMARY KEY,
-  ts           TIMESTAMPTZ NOT NULL,           -- event time (client-supplied or received_at)
-  received_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
   app          TEXT NOT NULL,
-  env          TEXT,
-  service      TEXT,
-  level        TEXT NOT NULL,                  -- debug|info|warn|error
+  env          TEXT NOT NULL DEFAULT '',
   event        TEXT NOT NULL,
+  level        TEXT NOT NULL DEFAULT 'info',   -- debug|info|warn|error
+  ts           TIMESTAMPTZ,                     -- optional client event time
   message      TEXT,
-  user_id      TEXT,
-  request_id   TEXT,
-  latency_ms   INTEGER,
-  data         JSONB
+  ids          JSONB,                           -- e.g. {"userId":"u1","requestId":"r9"}
+  data         JSONB,                           -- e.g. {"latencyMs":42,"status":200,"costUsd":0.01}
+  received_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  expires_at   TIMESTAMPTZ NOT NULL             -- received_at + per-level TTL
 );
 
-CREATE INDEX IF NOT EXISTS idx_events_received_at ON events (received_at DESC);
-CREATE INDEX IF NOT EXISTS idx_events_app_received ON events (app, received_at DESC);
-CREATE INDEX IF NOT EXISTS idx_events_level        ON events (level);
-CREATE INDEX IF NOT EXISTS idx_events_service      ON events (service);
-CREATE INDEX IF NOT EXISTS idx_events_user         ON events (user_id);
-CREATE INDEX IF NOT EXISTS idx_events_event        ON events (event);
+CREATE INDEX IF NOT EXISTS idx_events_received  ON events (received_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_events_app_recv  ON events (app, received_at DESC);
+CREATE INDEX IF NOT EXISTS idx_events_level     ON events (level);
+CREATE INDEX IF NOT EXISTS idx_events_event     ON events (event text_pattern_ops);
+CREATE INDEX IF NOT EXISTS idx_events_expires   ON events (expires_at);
+CREATE INDEX IF NOT EXISTS idx_events_data_gin  ON events USING GIN (data);
+CREATE INDEX IF NOT EXISTS idx_events_ids_gin   ON events USING GIN (ids);
 
 CREATE TABLE IF NOT EXISTS projects (
   slug        TEXT PRIMARY KEY,
   name        TEXT NOT NULL,
-  apps        TEXT[] NOT NULL DEFAULT '{}',    -- app globs, e.g. {"firehook","intervue-*"}
+  name_lower  TEXT NOT NULL UNIQUE,
+  apps        TEXT[] NOT NULL DEFAULT '{}',    -- member app names
   created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 ```
 
-Project scoping: a `project=<slug>` param resolves the project's `apps` globs to
-a set of app names and filters `events.app` accordingly. Glob resolution is
-ported from `src/query/scope.js` and `src/projects.js`. Keyset pagination on
-`/v1/logs` uses `(received_at, id)` as the cursor, mirroring the current Mongo
-keyset cursor.
+Project scoping: a `project=<slug>` param resolves the project's `apps` to a set
+of app names and filters `events.app` with `app = ANY($apps)` (the SQL form of
+`src/query/scope.js`'s `appScope`). An unknown slug resolves to an empty set, so
+the query matches no rows, matching the Mongo behavior. Keyset pagination on
+`/v1/logs` uses `(received_at, id)` descending as the cursor, mirroring the
+current Mongo keyset cursor; `_id` in responses is the row id as a string.
 
 ## 6. Endpoints
 
