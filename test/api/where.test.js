@@ -31,7 +31,7 @@ test('cursor becomes a keyset predicate with 2 params', () => {
   const cur = Buffer.from('1750550400000:99', 'utf8').toString('base64url');
   const r = buildWhere(new URLSearchParams(`cursor=${cur}`));
   assert.equal(r.clauses[0], '(received_at < $1 OR (received_at = $1 AND id < $2))');
-  assert.equal(r.params[1], 99);
+  assert.equal(r.params[1], '99');
 });
 
 test('from/to add a received_at range and reject inverted windows', () => {

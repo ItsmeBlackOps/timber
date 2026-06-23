@@ -69,16 +69,28 @@ async function uniqueSlug(sql, base) {
 
 export async function createProject(input, { now }) {
   const sql = db();
-  const slug = await uniqueSlug(sql, slugify(input.name));
   const nowIso = now().toISOString();
   const apps = input.apps ?? [];
-  const rows = await sql`
-    INSERT INTO projects (slug, name, name_lower, apps, created_at, updated_at)
-    VALUES (${slug}, ${input.name}, ${input.name.toLowerCase()}, ${apps}, ${nowIso}, ${nowIso})
-    ON CONFLICT (name_lower) DO NOTHING
-    RETURNING slug, name, apps`;
-  if (rows.length === 0) return { ok: false, conflict: true };
-  return { ok: true, value: toView(rows[0]) };
+  // Two concurrent creates whose names slugify to the same base can both probe a
+  // free slug and then collide on the slug PK (which ON CONFLICT name_lower does
+  // not cover). That collision is transient, so recompute the slug and retry; a
+  // genuine duplicate name still resolves to conflict via ON CONFLICT name_lower.
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const slug = await uniqueSlug(sql, slugify(input.name));
+    try {
+      const rows = await sql`
+        INSERT INTO projects (slug, name, name_lower, apps, created_at, updated_at)
+        VALUES (${slug}, ${input.name}, ${input.name.toLowerCase()}, ${apps}, ${nowIso}, ${nowIso})
+        ON CONFLICT (name_lower) DO NOTHING
+        RETURNING slug, name, apps`;
+      if (rows.length === 0) return { ok: false, conflict: true };
+      return { ok: true, value: toView(rows[0]) };
+    } catch (err) {
+      if (err && err.code === '23505') continue; // slug race: recompute + retry
+      throw err;
+    }
+  }
+  return { ok: false, conflict: true };
 }
 
 export async function updateProject(slug, patch, { now }) {

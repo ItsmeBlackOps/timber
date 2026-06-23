@@ -11,6 +11,20 @@ export default async function handler(req, res) {
   if (!secret || req.headers.authorization !== `Bearer ${secret}`) {
     return json(res, 401, { ok: false });
   }
-  const rows = await db()`DELETE FROM events WHERE expires_at < now() RETURNING 1`;
-  return json(res, 200, { ok: true, deleted: rows.length });
+  // Batch the delete so one cron run never opens an unbounded transaction that
+  // could exceed the serverless time limit (or pull millions of RETURNING rows
+  // into memory). Postgres has no DELETE ... LIMIT, so bound it via a subselect.
+  // Capped per invocation; the daily schedule catches any remainder next run.
+  const BATCH = 10_000;
+  const MAX_BATCHES = 50;
+  let deleted = 0;
+  for (let i = 0; i < MAX_BATCHES; i++) {
+    const rows = await db()`
+      DELETE FROM events
+      WHERE id IN (SELECT id FROM events WHERE expires_at < now() LIMIT ${BATCH})
+      RETURNING 1`;
+    deleted += rows.length;
+    if (rows.length < BATCH) break;
+  }
+  return json(res, 200, { ok: true, deleted });
 }

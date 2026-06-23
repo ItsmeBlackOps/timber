@@ -57,7 +57,7 @@ export async function runLogs(value, apps) {
   if (rows.length > value.limit) {
     items = rows.slice(0, value.limit);
     const last = items[items.length - 1];
-    nextCursor = encodeCursor({ receivedAt: new Date(last.received_at), id: Number(last.id) });
+    nextCursor = encodeCursor({ receivedAt: new Date(last.received_at), id: last.id });
   }
   return { items: items.map(toDoc), nextCursor };
 }

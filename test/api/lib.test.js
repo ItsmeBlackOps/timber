@@ -4,11 +4,14 @@ import { encodeCursor, decodeCursor } from '../../web/api/_lib/cursor.js';
 import { createKeyring, canRead, canWrite } from '../../web/api/_lib/keyring.js';
 import { validateBatch } from '../../web/api/_lib/validate.js';
 
-test('cursor round-trips received_at + id', () => {
+test('cursor round-trips received_at + id (id kept as a string for bigint precision)', () => {
   const c = { receivedAt: new Date('2026-06-22T00:00:00Z'), id: 42 };
   const back = decodeCursor(encodeCursor(c));
-  assert.equal(back.id, 42);
+  assert.equal(back.id, '42');
   assert.equal(back.receivedAt.getTime(), c.receivedAt.getTime());
+  // a bigint beyond 2^53 survives exactly because id is never coerced to Number
+  const big = '9007199254740993';
+  assert.equal(decodeCursor(encodeCursor({ receivedAt: c.receivedAt, id: big })).id, big);
 });
 
 test('decodeCursor rejects garbage', () => {

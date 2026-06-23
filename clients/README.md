@@ -11,7 +11,8 @@ POST ${TIMBER_URL}/v1/logs
 Authorization: Bearer <write key>
 Content-Type: application/json
 
-# one event or an array (batch up to 500):
+# one event, or an array (the API accepts up to 500 per request; the
+# helper clients below flush up to 50 at a time):
 { "event": "user.signup", "level": "info", "message": "new user",
   "ids": { "userId": "u1", "requestId": "r9" },
   "data": { "latencyMs": 42, "status": 200 } }
