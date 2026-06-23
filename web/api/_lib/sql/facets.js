@@ -64,6 +64,6 @@ export function mapFacetsRows(rows, value) {
 
 export async function runFacets(value, apps) {
   const { text, params } = buildFacetsSql(value, apps);
-  const rows = await db().query(text, params);
+  const rows = await db()(text, params);
   return mapFacetsRows(rows, value);
 }

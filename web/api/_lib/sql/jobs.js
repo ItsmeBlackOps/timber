@@ -92,6 +92,6 @@ export function mapJobsRows(rows, value) {
 
 export async function runJobs(value, prefixes, apps) {
   const { text, params } = buildJobsSql(value, prefixes, apps);
-  const rows = await db().query(text, params);
+  const rows = await db()(text, params);
   return mapJobsRows(rows, value);
 }

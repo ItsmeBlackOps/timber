@@ -29,6 +29,6 @@ export function mapEventsRows(rows) {
 
 export async function runEvents(value, apps) {
   const { text, params } = buildEventsSql(value, apps);
-  const rows = await db().query(text, params);
+  const rows = await db()(text, params);
   return mapEventsRows(rows);
 }

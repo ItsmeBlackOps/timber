@@ -20,7 +20,7 @@ async function ingest(req, res) {
     return json(res, v.status ?? 400, v.index != null ? { error: v.error, index: v.index } : { error: v.error });
   }
   const { text, params } = buildInsert(v.events, principal, ttlDays(), new Date());
-  await db().query(text, params);
+  await db()(text, params);
   return json(res, 201, { accepted: v.events.length, rejected: 0 });
 }
 

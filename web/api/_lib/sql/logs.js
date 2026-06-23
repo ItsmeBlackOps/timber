@@ -51,7 +51,7 @@ function toDoc(r) {
 
 export async function runLogs(value, apps) {
   const { text, params } = buildLogsSql(value, apps);
-  const rows = await db().query(text, params);
+  const rows = await db()(text, params);
   let items = rows;
   let nextCursor = null;
   if (rows.length > value.limit) {

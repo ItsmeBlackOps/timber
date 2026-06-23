@@ -131,6 +131,6 @@ export function mapGroupByRows(rows, value) {
 
 export async function runGroupBy(value, apps) {
   const { text, params } = buildGroupBySql(value, apps);
-  const rows = await db().query(text, params);
+  const rows = await db()(text, params);
   return mapGroupByRows(rows, value);
 }

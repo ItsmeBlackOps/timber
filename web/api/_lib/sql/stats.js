@@ -113,6 +113,6 @@ export function mapStatsRows(rows, value) {
 
 export async function runStats(value, apps) {
   const { text, params } = buildStatsSql(value, apps);
-  const rows = await db().query(text, params);
+  const rows = await db()(text, params);
   return mapStatsRows(rows, value);
 }
