@@ -70,6 +70,7 @@ export default async function handler(req, res) {
   try {
     upstream = await fetch(url, { headers: { 'X-API-KEY': apiKey } });
   } catch (err) {
+    console.error('[timber] logflare unreachable', err?.message);
     return json(res, 502, { error: 'logflare unreachable' });
   }
 
@@ -78,7 +79,12 @@ export default async function handler(req, res) {
     return json(res, 502, { error: 'logflare error', detail: text });
   }
 
-  const body = await upstream.json();
+  let body;
+  try {
+    body = await upstream.json();
+  } catch {
+    return json(res, 502, { error: 'logflare error', detail: 'non-json response' });
+  }
   const items = (body.result ?? []).map(normalizeRow);
   return json(res, 200, { items, nextCursor: null, source: 'logflare' });
 }
