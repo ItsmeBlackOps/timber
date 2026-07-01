@@ -9,6 +9,7 @@ import { buildInsert } from '../_lib/ingest.js';
 import { db } from '../_lib/db.js';
 import { parseLogsQuery, runLogs } from '../_lib/sql/logs.js';
 import { resolveScope } from '../_lib/projects.js';
+import { forwardToLogflare } from '../_lib/logflare.js';
 
 async function ingest(req, res) {
   const principal = requireWrite(req, res);
@@ -20,7 +21,14 @@ async function ingest(req, res) {
     return json(res, v.status ?? 400, v.index != null ? { error: v.error, index: v.index } : { error: v.error });
   }
   const { text, params } = buildInsert(v.events, principal, ttlDays(), new Date());
-  await db()(text, params);
+  // Run Neon insert and Logflare forward in parallel. Only the Neon result
+  // affects the response; Logflare is best-effort and must never block or fail
+  // the caller. v.events is already validated (batch + data-size limits) here.
+  const [neonResult] = await Promise.allSettled([
+    db()(text, params),
+    forwardToLogflare(v.events, principal),
+  ]);
+  if (neonResult.status === 'rejected') throw neonResult.reason;
   return json(res, 201, { accepted: v.events.length, rejected: 0 });
 }
 
