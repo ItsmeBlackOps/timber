@@ -21,15 +21,22 @@ async function ingest(req, res) {
     return json(res, v.status ?? 400, v.index != null ? { error: v.error, index: v.index } : { error: v.error });
   }
   const { text, params } = buildInsert(v.events, principal, ttlDays(), new Date());
-  // Run Neon insert and Logflare forward in parallel. Only the Neon result
-  // affects the response; Logflare is best-effort and must never block or fail
-  // the caller. v.events is already validated (batch + data-size limits) here.
-  const [neonResult] = await Promise.allSettled([
+  // Run Neon insert and Logflare forward in parallel. Neon is the primary store,
+  // but when Neon fails (e.g. project size limit reached) we fall back to Logflare:
+  // if Logflare accepted the batch the request still succeeds. Only when BOTH
+  // fail do we surface an error. v.events is already validated here.
+  const [neonResult, logflareResult] = await Promise.allSettled([
     db()(text, params),
     forwardToLogflare(v.events, principal),
   ]);
-  if (neonResult.status === 'rejected') throw neonResult.reason;
-  return json(res, 201, { accepted: v.events.length, rejected: 0 });
+  if (neonResult.status === 'fulfilled') {
+    return json(res, 201, { accepted: v.events.length, rejected: 0 });
+  }
+  console.error('[timber] neon insert failed', neonResult.reason?.message);
+  if (logflareResult.status === 'fulfilled' && logflareResult.value === true) {
+    return json(res, 201, { accepted: v.events.length, rejected: 0, store: 'logflare' });
+  }
+  throw neonResult.reason;
 }
 
 async function query(req, res) {

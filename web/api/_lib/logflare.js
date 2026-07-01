@@ -1,6 +1,6 @@
 // Logflare ingest helper. buildLogflarePayload is a pure function (testable
-// without network). forwardToLogflare is fire-and-forget: it never throws and
-// never blocks the Neon insert response path.
+// without network). forwardToLogflare never throws; it resolves to a boolean
+// so the caller can use Logflare as a fallback store when Neon fails.
 import { logflareConfig } from './env.js';
 
 const LOGFLARE_URL = 'https://api.logflare.app/api/logs';
@@ -25,16 +25,21 @@ export function buildLogflarePayload(events, principal, now) {
 
 export async function forwardToLogflare(events, principal) {
   const { sourceId, apiKey } = logflareConfig();
-  if (!sourceId || !apiKey) return;
+  if (!sourceId || !apiKey) return false;
   const payload = buildLogflarePayload(events, principal, new Date());
   try {
-    await fetch(`${LOGFLARE_URL}?source=${encodeURIComponent(sourceId)}`, {
+    const res = await fetch(`${LOGFLARE_URL}?source=${encodeURIComponent(sourceId)}`, {
       method: 'POST',
       headers: { 'X-API-KEY': apiKey, 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     });
+    if (!res.ok) {
+      console.error('[timber] logflare forward rejected', res.status);
+      return false;
+    }
+    return true;
   } catch (err) {
-    // fire-and-forget: log to stderr but never surface to caller
     console.error('[timber] logflare forward failed', err?.message);
+    return false;
   }
 }
