@@ -28,13 +28,13 @@ export async function forwardToLogflare(events, principal) {
   if (!sourceId || !apiKey) return;
   const payload = buildLogflarePayload(events, principal, new Date());
   try {
-    await fetch(`${LOGFLARE_URL}?source=${sourceId}`, {
+    await fetch(`${LOGFLARE_URL}?source=${encodeURIComponent(sourceId)}`, {
       method: 'POST',
       headers: { 'X-API-KEY': apiKey, 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     });
-  } catch {
+  } catch (err) {
     // fire-and-forget: log to stderr but never surface to caller
-    console.error('[timber] logflare forward failed');
+    console.error('[timber] logflare forward failed', err?.message);
   }
 }
