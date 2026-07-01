@@ -33,3 +33,9 @@ export const jobPrefixes = () =>
   (process.env.TIMBER_JOB_PREFIXES ?? 'cron.').split(',').map((s) => s.trim()).filter(Boolean);
 
 export const cronSecret = () => process.env.CRON_SECRET ?? '';
+
+export const logflareConfig = () => ({
+  sourceId: process.env.LOGFLARE_SOURCE_ID ?? '',
+  apiKey: process.env.LOGFLARE_API_KEY ?? '',
+  endpointId: process.env.LOGFLARE_ENDPOINT_ID ?? '',
+});
